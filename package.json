@@ -1,0 +1,35 @@
+{
+	"name": "@jitsusama/agentic-harness.core",
+	"version": "0.1.0",
+	"description": "Pi-agnostic business logic for agentic-harness: state machines, guardian decisions, quest/TDD domain model.",
+	"license": "MIT",
+	"type": "module",
+	"exports": {
+		"./tdd": "./dist/tdd/index.js",
+		"./tdd/presentation": "./dist/tdd/presentation.js"
+	},
+	"bin": {
+		"agentic-harness-core": "./dist/bin/cli.js"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json",
+		"lint": "biome check .",
+		"lint:fix": "biome check --write .",
+		"typecheck": "tsc --noEmit",
+		"pretest": "npm run build",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.9",
+		"@types/node": "^26.1.1",
+		"typescript": "^7.0.2",
+		"vitest": "^4.1.11"
+	}
+}
