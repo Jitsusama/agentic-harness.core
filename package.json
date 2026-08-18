@@ -16,6 +16,7 @@
 	],
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json",
+		"prepare": "npm run build",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
 		"typecheck": "tsc --noEmit",
