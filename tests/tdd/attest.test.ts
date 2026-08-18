@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { attest } from "../../src/tdd/attest.js";
-import { idleLoop, type Loop } from "../../src/tdd/machine.js";
+import { attest } from "../../tdd/attest.js";
+import { idleLoop, type Loop } from "../../tdd/machine.js";
 
 function loop(overrides: Partial<Loop> = {}): Loop {
 	return {

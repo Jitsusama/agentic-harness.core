@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Action } from "../../src/tdd/machine.js";
-import { idleLoop, type Loop, transition } from "../../src/tdd/machine.js";
+import type { Action } from "../../tdd/machine.js";
+import { idleLoop, type Loop, transition } from "../../tdd/machine.js";
 
 /** An active loop in a given phase, for testing one transition in isolation. */
 function loop(overrides: Partial<Loop> = {}): Loop {

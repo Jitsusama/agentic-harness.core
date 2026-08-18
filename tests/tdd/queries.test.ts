@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { idleLoop, type Loop } from "../../src/tdd/machine.js";
-import { standingReminder } from "../../src/tdd/queries.js";
+import { idleLoop, type Loop } from "../../tdd/machine.js";
+import { standingReminder } from "../../tdd/queries.js";
 
 function loop(overrides: Partial<Loop> = {}): Loop {
 	return {

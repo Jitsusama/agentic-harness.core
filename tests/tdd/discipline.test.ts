@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { disciplineFor } from "../../src/tdd/discipline.js";
+import { disciplineFor } from "../../tdd/discipline.js";
 
 describe("disciplineFor", () => {
 	it("holds planning to one increment of intent", () => {

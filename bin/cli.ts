@@ -20,7 +20,7 @@ import {
 	idleLoop,
 	type Loop,
 	standingReminder,
-} from "../src/tdd/index.js";
+} from "../tdd/index.js";
 
 /** Where a loop's state lives when the caller doesn't override it. */
 const DEFAULT_STATE_FILE = ".agentic-harness/tdd-loop.json";

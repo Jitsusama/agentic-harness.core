@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Loop } from "../../src/tdd/machine.js";
-import { glyph, visualState } from "../../src/tdd/presentation.js";
+import type { Loop } from "../../tdd/machine.js";
+import { glyph, visualState } from "../../tdd/presentation.js";
 
 function loop(overrides: Partial<Loop> = {}): Loop {
 	return {
