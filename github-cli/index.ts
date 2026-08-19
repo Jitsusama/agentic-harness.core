@@ -16,6 +16,8 @@ import {
 } from "../shell/parse.js";
 import { GH_BODY_SPEC } from "./command-spec.js";
 
+export { GH_BODY_SPEC } from "./command-spec.js";
+
 /**
  * The form every one of these blocks is asking for, written out.
  *
