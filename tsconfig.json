@@ -19,6 +19,7 @@
 		"git-cli",
 		"github-cli",
 		"attribution",
+		"verify",
 		"bin",
 		"tests"
 	]

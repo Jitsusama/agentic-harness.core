@@ -24,6 +24,7 @@ import {
 	type Loop,
 	standingReminder,
 } from "../tdd/index.js";
+import { runVerify } from "../verify/index.js";
 import { checkAttribution, ensureAttributionHook } from "./attribution.js";
 
 /** Where a loop's state lives when the caller doesn't override it. */
@@ -150,6 +151,12 @@ async function main(): Promise<void> {
 	if (options.domain === "hook" && options.command === "pre-bash") {
 		const output = await runHookPreBash();
 		if (output) process.stdout.write(`${output}\n`);
+		return;
+	}
+	if (options.domain === "verify" && options.command === "run") {
+		const result = await runVerify({ cwd: process.cwd() });
+		process.stdout.write(`${JSON.stringify(result)}\n`);
+		process.exitCode = result.ok ? 0 : 1;
 		return;
 	}
 
