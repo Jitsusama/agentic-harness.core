@@ -31,6 +31,7 @@
 		"./quest/verbs/lifecycle": "./dist/quest/verbs/lifecycle.js",
 		"./quest/verbs/tree-ops": "./dist/quest/verbs/tree-ops.js",
 		"./tree": "./dist/tree/index.js",
+		"./lsp": "./dist/lsp/index.js",
 		"./refs": "./dist/refs/index.js",
 		"./prose": "./dist/prose/index.js"
 	},
@@ -55,6 +56,8 @@
 	},
 	"dependencies": {
 		"sqlite3": "^6.0.1",
+		"vscode-jsonrpc": "^9.0.1",
+		"vscode-languageserver-protocol": "^3.18.2",
 		"yaml": "^2.9.0"
 	},
 	"devDependencies": {

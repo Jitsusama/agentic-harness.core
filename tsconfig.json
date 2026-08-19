@@ -28,6 +28,7 @@
 		"ui",
 		"terminal",
 		"tree",
+		"lsp",
 		"gate",
 		"bin",
 		"tests"
