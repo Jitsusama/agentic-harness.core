@@ -46,7 +46,8 @@
 		"./clock": "./dist/clock/index.js",
 		"./exec": "./dist/exec/index.js",
 		"./remote": "./dist/remote/index.js",
-		"./review": "./dist/review/index.js"
+		"./review": "./dist/review/index.js",
+		"./web": "./dist/web/index.js"
 	},
 	"bin": {
 		"agentic-harness-core": "./dist/bin/cli.js"
@@ -68,7 +69,13 @@
 		"node": ">=22.19.0"
 	},
 	"dependencies": {
+		"axe-core": "^4.12.1",
+		"defuddle": "^0.19.1",
+		"jsdom": "^29.1.1",
 		"jsonpath-plus": "^10.4.0",
+		"pixelmatch": "^7.2.0",
+		"pngjs": "^7.0.0",
+		"puppeteer-core": "^25.3.0",
 		"sqlite3": "^6.0.1",
 		"vscode-jsonrpc": "^9.0.1",
 		"vscode-languageserver-protocol": "^3.18.2",
@@ -76,7 +83,9 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.9",
+		"@types/jsdom": "^28.0.3",
 		"@types/node": "^26.1.1",
+		"@types/pngjs": "^6.0.5",
 		"typescript": "^7.0.2",
 		"vitest": "^4.1.11"
 	}

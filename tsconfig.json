@@ -39,6 +39,7 @@
 		"exec",
 		"remote",
 		"review",
+		"web",
 		"bin",
 		"tests"
 	]
