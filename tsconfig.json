@@ -29,6 +29,7 @@
 		"terminal",
 		"tree",
 		"lsp",
+		"result",
 		"gate",
 		"bin",
 		"tests"

@@ -32,6 +32,7 @@
 		"./quest/verbs/tree-ops": "./dist/quest/verbs/tree-ops.js",
 		"./tree": "./dist/tree/index.js",
 		"./lsp": "./dist/lsp/index.js",
+		"./result": "./dist/result/index.js",
 		"./refs": "./dist/refs/index.js",
 		"./prose": "./dist/prose/index.js"
 	},
@@ -55,6 +56,7 @@
 		"node": ">=22.19.0"
 	},
 	"dependencies": {
+		"jsonpath-plus": "^10.4.0",
 		"sqlite3": "^6.0.1",
 		"vscode-jsonrpc": "^9.0.1",
 		"vscode-languageserver-protocol": "^3.18.2",
