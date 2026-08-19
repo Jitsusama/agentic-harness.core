@@ -23,6 +23,9 @@
 		"lsp",
 		"result",
 		"gate",
+		"sections",
+		"title",
+		"guardian",
 		"bin"
 	]
 }

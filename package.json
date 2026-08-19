@@ -34,7 +34,14 @@
 		"./lsp": "./dist/lsp/index.js",
 		"./result": "./dist/result/index.js",
 		"./refs": "./dist/refs/index.js",
-		"./prose": "./dist/prose/index.js"
+		"./prose": "./dist/prose/index.js",
+		"./gate": "./dist/gate/index.js",
+		"./sections": "./dist/sections/index.js",
+		"./title": "./dist/title/index.js",
+		"./guardian": "./dist/guardian/index.js",
+		"./guardian/prose-gate": "./dist/internal/guardian/prose-gate.js",
+		"./guardian/section-gate": "./dist/internal/guardian/section-gate.js",
+		"./guardian/title-gate": "./dist/internal/guardian/title-gate.js"
 	},
 	"bin": {
 		"agentic-harness-core": "./dist/bin/cli.js"
