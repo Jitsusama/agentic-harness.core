@@ -12,7 +12,8 @@
 		"./git-cli": "./dist/git-cli/index.js",
 		"./github-cli": "./dist/github-cli/index.js",
 		"./attribution": "./dist/attribution/index.js",
-		"./verify": "./dist/verify/index.js"
+		"./verify": "./dist/verify/index.js",
+		"./memory": "./dist/memory/index.js"
 	},
 	"bin": {
 		"agentic-harness-core": "./dist/bin/cli.js"
@@ -32,6 +33,9 @@
 	},
 	"engines": {
 		"node": ">=22.19.0"
+	},
+	"dependencies": {
+		"sqlite3": "^6.0.1"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.9",

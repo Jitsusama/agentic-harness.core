@@ -26,6 +26,12 @@ import {
 } from "../tdd/index.js";
 import { runVerify } from "../verify/index.js";
 import { checkAttribution, ensureAttributionHook } from "./attribution.js";
+import {
+	runMemoryEdit,
+	runMemoryRecall,
+	runMemoryReflect,
+	runMemoryRetain,
+} from "./memory.js";
 
 /** Where a loop's state lives when the caller doesn't override it. */
 const DEFAULT_STATE_FILE = ".agentic-harness/tdd-loop.json";
@@ -158,6 +164,20 @@ async function main(): Promise<void> {
 		process.stdout.write(`${JSON.stringify(result)}\n`);
 		process.exitCode = result.ok ? 0 : 1;
 		return;
+	}
+	if (options.domain === "memory") {
+		const handlers: Record<string, (input: string) => Promise<unknown>> = {
+			retain: runMemoryRetain,
+			recall: runMemoryRecall,
+			reflect: runMemoryReflect,
+			edit: runMemoryEdit,
+		};
+		const handler = handlers[options.command];
+		if (handler) {
+			const input = await readStdin();
+			process.stdout.write(`${JSON.stringify(await handler(input))}\n`);
+			return;
+		}
 	}
 
 	throw new Error(`Unknown command: ${options.domain} ${options.command}`);

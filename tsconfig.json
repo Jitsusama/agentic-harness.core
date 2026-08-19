@@ -20,6 +20,7 @@
 		"github-cli",
 		"attribution",
 		"verify",
+		"memory",
 		"bin",
 		"tests"
 	]

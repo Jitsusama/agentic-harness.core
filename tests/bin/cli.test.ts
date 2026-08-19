@@ -178,3 +178,92 @@ describe("hook pre-bash", () => {
 		);
 	});
 });
+
+async function runMemory(args: string[], stdin: string) {
+	// XDG_STATE_HOME points at the isolated temp dir from beforeEach,
+	// not the real one: memory writes a real, persistent SQLite file
+	// there, and this suite must never touch the developer's own
+	// memory database.
+	const child = spawn(process.execPath, [CLI, "memory", ...args], {
+		env: { ...process.env, XDG_STATE_HOME: dir },
+	});
+	child.stdin.write(stdin);
+	child.stdin.end();
+
+	let stdout = "";
+	let stderr = "";
+	child.stdout.on("data", (chunk) => {
+		stdout += chunk;
+	});
+	child.stderr.on("data", (chunk) => {
+		stderr += chunk;
+	});
+	const exitCode: number = await new Promise((resolve, reject) => {
+		child.on("error", reject);
+		child.on("close", (code) => resolve(code ?? 0));
+	});
+	if (exitCode !== 0) {
+		throw new Error(`CLI exited ${exitCode}: ${stderr}`);
+	}
+	return JSON.parse(stdout.trim());
+}
+
+describe("memory", () => {
+	it("retains, recalls and reflects on a fact end to end", async () => {
+		const retained = await runMemory(
+			["retain"],
+			JSON.stringify({ text: "the deploy key lives in .env.deploy" }),
+		);
+		expect(retained.id).toBeGreaterThan(0);
+
+		const recalled = await runMemory(["recall"], "{}");
+		expect(recalled).toHaveLength(1);
+		expect(recalled[0].text).toBe("the deploy key lives in .env.deploy");
+
+		const reflected = await runMemory(
+			["reflect"],
+			JSON.stringify({ question: "where is the deploy key" }),
+		);
+		expect(reflected.text).toContain("the deploy key lives in .env.deploy");
+	});
+
+	it("edits a fact's text", async () => {
+		const retained = await runMemory(
+			["retain"],
+			JSON.stringify({ text: "wrong" }),
+		);
+
+		const edited = await runMemory(
+			["edit"],
+			JSON.stringify({ id: retained.id, text: "right" }),
+		);
+
+		expect(edited.ok).toBe(true);
+		expect(edited.fact.text).toBe("right");
+	});
+
+	it("invalidates a fact so it stops being recalled", async () => {
+		const retained = await runMemory(
+			["retain"],
+			JSON.stringify({ text: "temporary" }),
+		);
+
+		const invalidated = await runMemory(
+			["edit"],
+			JSON.stringify({ id: retained.id, invalidate: true }),
+		);
+		expect(invalidated.ok).toBe(true);
+
+		const recalled = await runMemory(["recall"], "{}");
+		expect(recalled).toEqual([]);
+	});
+
+	it("scopes facts to the project at cwd by default", async () => {
+		const retained = await runMemory(
+			["retain"],
+			JSON.stringify({ text: "scoped fact" }),
+		);
+
+		expect(retained.scope).toBe(`project:${process.cwd()}`);
+	});
+});
