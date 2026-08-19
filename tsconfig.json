@@ -21,6 +21,13 @@
 		"attribution",
 		"verify",
 		"memory",
+		"internal",
+		"quest",
+		"refs",
+		"prose",
+		"ui",
+		"terminal",
+		"gate",
 		"bin",
 		"tests"
 	]
