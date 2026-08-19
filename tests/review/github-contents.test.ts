@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createGitHubProvider, githubChange } from "../../review/index.js";
-import { fakeExec } from "./support/fake-exec.js";
+import { fakeExec } from "../support/fake-exec.js";
 
 const ref = githubChange({ key: "github:o/r" }, "7");
 

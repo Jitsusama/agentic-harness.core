@@ -5,7 +5,7 @@ import {
 	createGitHubProvider,
 	type Thread,
 } from "../../review/index.js";
-import { callMatching, fakeExec, type Reply } from "./support/fake-exec.js";
+import { callMatching, fakeExec, type Reply } from "../support/fake-exec.js";
 
 const repo = { key: "github:Shopify/world" };
 const ref: ChangeRef = {

@@ -46,6 +46,8 @@
 		"./clock": "./dist/clock/index.js",
 		"./exec": "./dist/exec/index.js",
 		"./remote": "./dist/remote/index.js",
+		"./process": "./dist/process/index.js",
+		"./work": "./dist/work/index.js",
 		"./review": "./dist/review/index.js",
 		"./web": "./dist/web/index.js",
 		"./web/a11y": "./dist/web/a11y/index.js",

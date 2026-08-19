@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 import { githubAuthoring } from "../../review/index.js";
-import { fakeExec } from "./support/fake-exec.js";
+import { fakeExec } from "../support/fake-exec.js";
 
 const REPO = { key: "github:Shopify/world" };
 const CHANGE = {

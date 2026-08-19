@@ -20,8 +20,8 @@
  * gap that let the original bug through.
  *
  * Ported from agentic-harness.pi's own gate over `lib/review`, which
- * this package's `review` now is; that gate still watches what stayed
- * local (`lib/work`, at the time of writing).
+ * this package's `review` now is; `work`, which shells out to git the
+ * same way, moved here alongside it and is covered too.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -29,7 +29,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /** Libraries whose only scoping mechanism is `-C`. */
-const SCOPED_LIBS = ["review"];
+const SCOPED_LIBS = ["review", "work"];
 
 /**
  * Subcommands that are not about a repo, so a scope would be

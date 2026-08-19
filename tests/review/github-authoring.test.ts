@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChangeRef, RepoLocator } from "../../review/index.js";
 import { githubAuthoring } from "../../review/index.js";
-import { fakeExec } from "./support/fake-exec.js";
+import { fakeExec } from "../support/fake-exec.js";
 
 const repo: RepoLocator = { key: "github:o/r" };
 

@@ -12,7 +12,7 @@ import {
 	type ReviewEngine,
 	registerReviewProvider,
 } from "../../review/index.js";
-import { fakeExec, type Reply } from "./support/fake-exec.js";
+import { fakeExec, type Reply } from "../support/fake-exec.js";
 import { stubProvider } from "./support/stub-provider.js";
 
 const pullJson = JSON.stringify({
