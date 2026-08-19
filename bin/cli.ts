@@ -32,24 +32,30 @@ import {
 	runMemoryReflect,
 	runMemoryRetain,
 } from "./memory.js";
+import { runQuestAction } from "./quest.js";
 
 /** Where a loop's state lives when the caller doesn't override it. */
 const DEFAULT_STATE_FILE = ".agentic-harness/tdd-loop.json";
+/** Where quest state lives when the caller doesn't override it. */
+const DEFAULT_QUEST_STATE_FILE = ".agentic-harness/quest-state.json";
 
 interface Options {
 	domain: string;
 	command: string;
 	stateFile: string;
+	questsRoot: string | undefined;
 }
 
 function parseArgs(argv: string[]): Options {
 	const [domain, command, ...rest] = argv;
 	if (!domain || !command) {
 		throw new Error(
-			"Usage: agentic-harness-core <domain> <command> [--state-file <path>]",
+			"Usage: agentic-harness-core <domain> <command> [--state-file <path>] [--quests-root <path>]",
 		);
 	}
-	let stateFile = DEFAULT_STATE_FILE;
+	let stateFile =
+		domain === "quest" ? DEFAULT_QUEST_STATE_FILE : DEFAULT_STATE_FILE;
+	let questsRoot: string | undefined;
 	for (let i = 0; i < rest.length; i++) {
 		if (rest[i] === "--state-file") {
 			const value = rest[i + 1];
@@ -58,9 +64,16 @@ function parseArgs(argv: string[]): Options {
 			}
 			stateFile = value;
 			i++;
+		} else if (rest[i] === "--quests-root") {
+			const value = rest[i + 1];
+			if (!value) {
+				throw new Error("--quests-root requires a path");
+			}
+			questsRoot = value;
+			i++;
 		}
 	}
-	return { domain, command, stateFile };
+	return { domain, command, stateFile, questsRoot };
 }
 
 async function readStdin(): Promise<string> {
@@ -161,6 +174,21 @@ async function main(): Promise<void> {
 	}
 	if (options.domain === "verify" && options.command === "run") {
 		const result = await runVerify({ cwd: process.cwd() });
+		process.stdout.write(`${JSON.stringify(result)}\n`);
+		process.exitCode = result.ok ? 0 : 1;
+		return;
+	}
+	if (options.domain === "quest") {
+		const input = await readStdin();
+		const params = input.trim().length > 0 ? JSON.parse(input) : {};
+		const result = await runQuestAction(
+			{
+				action: options.command,
+				stateFile: options.stateFile,
+				questsRoot: options.questsRoot,
+			},
+			params,
+		);
 		process.stdout.write(`${JSON.stringify(result)}\n`);
 		process.exitCode = result.ok ? 0 : 1;
 		return;

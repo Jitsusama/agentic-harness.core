@@ -27,6 +27,7 @@
 		"prose",
 		"ui",
 		"terminal",
+		"tree",
 		"gate",
 		"bin",
 		"tests"

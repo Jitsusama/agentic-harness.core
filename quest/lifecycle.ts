@@ -131,6 +131,42 @@ export function findQuestEntry(
 }
 
 /**
+ * Load a quest by id into `state`: the state-mutation half of pi's
+ * own `loadQuest`. pi's version additionally calls
+ * `pi.setSessionName?.()` once this succeeds -- a pi-only
+ * enrichment with no equivalent host concept, so it stays out of
+ * this pure version; an adapter that wants it layers it on after
+ * calling this.
+ */
+export function loadQuestById(
+	state: QuestState,
+	id: string,
+): { ok: true } | { ok: false; guidance: string } {
+	const entry = findQuestEntry(state, id);
+	if (!entry) {
+		return {
+			ok: false,
+			guidance: `No quest with id "${id}" under ${state.questsRoot}.`,
+		};
+	}
+	state.questDir = entry.dir;
+	state.questId = entry.doc.frontMatter.id;
+	state.questTitle = entry.doc.title ?? null;
+	state.questKind = entry.doc.frontMatter.kind;
+	state.questStatus = entry.doc.frontMatter.status;
+	state.questPriority = entry.doc.frontMatter.priority;
+	state.questVerify = entry.doc.frontMatter.verify ?? null;
+	state.scratchDir = entry.doc.frontMatter.scratchDir ?? null;
+	state.documentPath = null;
+	state.documentId = null;
+	state.documentKind = null;
+	state.documentTitle = null;
+	state.documentStage = "idle";
+	refreshProgress(state);
+	return { ok: true };
+}
+
+/**
  * Re-read the loaded quest's README and refresh the in-memory
  * slice (title, kind, status, priority) so an edit to the quest's
  * own README shows up in the status line without a manual reload.
