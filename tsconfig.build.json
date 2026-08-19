@@ -26,6 +26,11 @@
 		"sections",
 		"title",
 		"guardian",
+		"clock",
+		"thinking",
+		"exec",
+		"remote",
+		"review",
 		"bin"
 	]
 }

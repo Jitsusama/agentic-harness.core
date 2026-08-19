@@ -41,7 +41,11 @@
 		"./guardian": "./dist/guardian/index.js",
 		"./guardian/prose-gate": "./dist/internal/guardian/prose-gate.js",
 		"./guardian/section-gate": "./dist/internal/guardian/section-gate.js",
-		"./guardian/title-gate": "./dist/internal/guardian/title-gate.js"
+		"./guardian/title-gate": "./dist/internal/guardian/title-gate.js",
+		"./clock": "./dist/clock/index.js",
+		"./exec": "./dist/exec/index.js",
+		"./remote": "./dist/remote/index.js",
+		"./review": "./dist/review/index.js"
 	},
 	"bin": {
 		"agentic-harness-core": "./dist/bin/cli.js"
