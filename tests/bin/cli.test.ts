@@ -97,7 +97,13 @@ describe("tdd attest", () => {
 });
 
 async function runHook(stdin: string): Promise<string> {
-	const child = spawn(process.execPath, [CLI, "hook", "pre-bash"]);
+	// cwd is the isolated temp dir from beforeEach, not this repo: the
+	// hook installs a real git commit-msg hook as a side effect, and
+	// running it from the real project directory would install one
+	// here for real (this bit a real run once).
+	const child = spawn(process.execPath, [CLI, "hook", "pre-bash"], {
+		cwd: dir,
+	});
 	child.stdin.write(stdin);
 	child.stdin.end();
 
@@ -154,5 +160,21 @@ describe("hook pre-bash", () => {
 			JSON.stringify({ tool_name: "Edit", tool_input: { file_path: "x" } }),
 		);
 		expect(output).toBe("");
+	});
+
+	it("denies an unattributed gh pr create, naming the corrected command", async () => {
+		const output = await runHook(
+			JSON.stringify({
+				tool_name: "Bash",
+				tool_input: {
+					command: "gh pr create --title x --body-file - <<'EOF'\nbody\nEOF",
+				},
+			}),
+		);
+		const parsed = JSON.parse(output);
+		expect(parsed.hookSpecificOutput.permissionDecision).toBe("deny");
+		expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain(
+			"Co-Authored-By AI via [Claude Code]",
+		);
 	});
 });

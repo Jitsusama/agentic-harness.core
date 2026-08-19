@@ -14,6 +14,7 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { effectiveCwd, tokenize } from "../command/index.js";
 import { checkGitCli } from "../git-cli/index.js";
 import { checkGithubCli } from "../github-cli/index.js";
 import {
@@ -23,6 +24,7 @@ import {
 	type Loop,
 	standingReminder,
 } from "../tdd/index.js";
+import { checkAttribution, ensureAttributionHook } from "./attribution.js";
 
 /** Where a loop's state lives when the caller doesn't override it. */
 const DEFAULT_STATE_FILE = ".agentic-harness/tdd-loop.json";
@@ -112,7 +114,13 @@ async function runHookPreBash(): Promise<string> {
 	const command = payload.tool_input?.command;
 	if (payload.tool_name !== "Bash" || !command) return "";
 
-	const reason = checkGitCli(command) ?? checkGithubCli(command);
+	const cwd = effectiveCwd(tokenize(command), process.cwd());
+	ensureAttributionHook("dir" in cwd ? cwd.dir : process.cwd());
+
+	const reason =
+		checkGitCli(command) ??
+		checkGithubCli(command) ??
+		checkAttribution(command);
 	if (!reason) return "";
 
 	return JSON.stringify({
