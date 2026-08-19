@@ -4,5 +4,5 @@
 		"noEmit": false,
 		"outDir": "dist"
 	},
-	"include": ["tdd", "bin"]
+	"include": ["tdd", "shell", "command", "git-cli", "github-cli", "bin"]
 }

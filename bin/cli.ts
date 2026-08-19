@@ -14,6 +14,8 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { checkGitCli } from "../git-cli/index.js";
+import { checkGithubCli } from "../github-cli/index.js";
 import {
 	type Attestation,
 	attest,
@@ -91,6 +93,37 @@ async function runTddStatus(stateFile: string): Promise<unknown> {
 	return { loop, reminder: standingReminder(loop) };
 }
 
+/** The subset of Claude Code's PreToolUse hook stdin payload this reads. */
+interface PreToolUseInput {
+	tool_name?: string;
+	tool_input?: { command?: string };
+}
+
+/**
+ * Claude Code's PreToolUse hook contract for a Bash call: deny with
+ * a reason, or say nothing so the normal permission flow decides.
+ * Never emit an explicit "allow" here — that would bypass whatever
+ * else (other hooks, the user's permission mode) would otherwise
+ * decide, for every bash command this hook doesn't flag.
+ */
+async function runHookPreBash(): Promise<string> {
+	const input = await readStdin();
+	const payload = JSON.parse(input) as PreToolUseInput;
+	const command = payload.tool_input?.command;
+	if (payload.tool_name !== "Bash" || !command) return "";
+
+	const reason = checkGitCli(command) ?? checkGithubCli(command);
+	if (!reason) return "";
+
+	return JSON.stringify({
+		hookSpecificOutput: {
+			hookEventName: "PreToolUse",
+			permissionDecision: "deny",
+			permissionDecisionReason: reason,
+		},
+	});
+}
+
 async function main(): Promise<void> {
 	const options = parseArgs(process.argv.slice(2));
 
@@ -104,6 +137,11 @@ async function main(): Promise<void> {
 		process.stdout.write(
 			`${JSON.stringify(await runTddStatus(options.stateFile))}\n`,
 		);
+		return;
+	}
+	if (options.domain === "hook" && options.command === "pre-bash") {
+		const output = await runHookPreBash();
+		if (output) process.stdout.write(`${output}\n`);
 		return;
 	}
 

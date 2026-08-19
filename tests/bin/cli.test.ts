@@ -95,3 +95,64 @@ describe("tdd attest", () => {
 		expect(status.loop.phase).toBe("plan");
 	});
 });
+
+async function runHook(stdin: string): Promise<string> {
+	const child = spawn(process.execPath, [CLI, "hook", "pre-bash"]);
+	child.stdin.write(stdin);
+	child.stdin.end();
+
+	let stdout = "";
+	child.stdout.on("data", (chunk) => {
+		stdout += chunk;
+	});
+	await new Promise((resolve, reject) => {
+		child.on("error", reject);
+		child.on("close", resolve);
+	});
+	return stdout.trim();
+}
+
+describe("hook pre-bash", () => {
+	it("denies a flagged git command with a reason", async () => {
+		const output = await runHook(
+			JSON.stringify({
+				tool_name: "Bash",
+				tool_input: { command: "git commit --amend -m fix" },
+			}),
+		);
+		const parsed = JSON.parse(output);
+		expect(parsed.hookSpecificOutput.hookEventName).toBe("PreToolUse");
+		expect(parsed.hookSpecificOutput.permissionDecision).toBe("deny");
+		expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain(
+			"--amend",
+		);
+	});
+
+	it("denies a flagged gh command with a reason", async () => {
+		const output = await runHook(
+			JSON.stringify({
+				tool_name: "Bash",
+				tool_input: { command: "gh pr create --title x --body y" },
+			}),
+		);
+		const parsed = JSON.parse(output);
+		expect(parsed.hookSpecificOutput.permissionDecision).toBe("deny");
+		expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain(
+			"inline body",
+		);
+	});
+
+	it("says nothing for a clean bash command, deferring to the normal flow", async () => {
+		const output = await runHook(
+			JSON.stringify({ tool_name: "Bash", tool_input: { command: "ls -la" } }),
+		);
+		expect(output).toBe("");
+	});
+
+	it("says nothing for a non-Bash tool call", async () => {
+		const output = await runHook(
+			JSON.stringify({ tool_name: "Edit", tool_input: { file_path: "x" } }),
+		);
+		expect(output).toBe("");
+	});
+});

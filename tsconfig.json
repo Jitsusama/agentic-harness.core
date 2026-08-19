@@ -6,13 +6,19 @@
 		"lib": ["ES2023"],
 		"types": ["node"],
 		"strict": true,
-		"noUncheckedIndexedAccess": true,
-		"exactOptionalPropertyTypes": true,
 		"esModuleInterop": true,
 		"skipLibCheck": true,
 		"forceConsistentCasingInFileNames": true,
 		"declaration": true,
 		"noEmit": true
 	},
-	"include": ["tdd", "bin", "tests"]
+	"include": [
+		"tdd",
+		"shell",
+		"command",
+		"git-cli",
+		"github-cli",
+		"bin",
+		"tests"
+	]
 }

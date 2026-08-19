@@ -6,7 +6,11 @@
 	"type": "module",
 	"exports": {
 		"./tdd": "./dist/tdd/index.js",
-		"./tdd/presentation": "./dist/tdd/presentation.js"
+		"./tdd/presentation": "./dist/tdd/presentation.js",
+		"./shell": "./dist/shell/index.js",
+		"./command": "./dist/command/index.js",
+		"./git-cli": "./dist/git-cli/index.js",
+		"./github-cli": "./dist/github-cli/index.js"
 	},
 	"bin": {
 		"agentic-harness-core": "./dist/bin/cli.js"
