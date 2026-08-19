@@ -63,7 +63,8 @@
 		"typecheck": "tsc --noEmit",
 		"pretest": "npm run build",
 		"test": "vitest run",
-		"test:watch": "vitest"
+		"test:watch": "vitest",
+		"test:browser": "vitest run --config vitest.browser.config.ts"
 	},
 	"engines": {
 		"node": ">=22.19.0"
@@ -86,7 +87,9 @@
 		"@types/jsdom": "^28.0.3",
 		"@types/node": "^26.1.1",
 		"@types/pngjs": "^6.0.5",
+		"@types/ws": "^8.18.1",
 		"typescript": "^7.0.2",
-		"vitest": "^4.1.11"
+		"vitest": "^4.1.11",
+		"ws": "^8.21.1"
 	}
 }
