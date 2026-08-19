@@ -8,6 +8,7 @@
  */
 
 export {
+	buildPrepareCommitMsgHook,
 	type CommitHookOptions,
 	ensureCommitHook,
 	type HookInstall,
