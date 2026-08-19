@@ -18,6 +18,7 @@
 		"command",
 		"git-cli",
 		"github-cli",
+		"attribution",
 		"bin",
 		"tests"
 	]

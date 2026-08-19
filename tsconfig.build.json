@@ -4,5 +4,13 @@
 		"noEmit": false,
 		"outDir": "dist"
 	},
-	"include": ["tdd", "shell", "command", "git-cli", "github-cli", "bin"]
+	"include": [
+		"tdd",
+		"shell",
+		"command",
+		"git-cli",
+		"github-cli",
+		"attribution",
+		"bin"
+	]
 }

@@ -10,7 +10,8 @@
 		"./shell": "./dist/shell/index.js",
 		"./command": "./dist/command/index.js",
 		"./git-cli": "./dist/git-cli/index.js",
-		"./github-cli": "./dist/github-cli/index.js"
+		"./github-cli": "./dist/github-cli/index.js",
+		"./attribution": "./dist/attribution/index.js"
 	},
 	"bin": {
 		"agentic-harness-core": "./dist/bin/cli.js"

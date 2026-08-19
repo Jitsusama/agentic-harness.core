@@ -218,3 +218,9 @@ export function checkGithubCli(command: string): string | null {
 		null
 	);
 }
+
+/** Detect whether a bash command contains a specific gh subcommand. */
+export function isGhCommand(command: string, subcommand: string): boolean {
+	const re = new RegExp(`\\bgh\\s+${subcommand}\\s+(create|edit)\\b`);
+	return re.test(command);
+}
