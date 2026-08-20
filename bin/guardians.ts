@@ -40,10 +40,19 @@ import {
 	extractMessage,
 	isGitCommitCommand,
 } from "../internal/guardian/commit-shell.js";
-import { runProseGate } from "../internal/guardian/prose-gate.js";
+import {
+	proseGateNote,
+	runProseGate,
+} from "../internal/guardian/prose-gate.js";
 import { runRedirectGate } from "../internal/guardian/redirect-gate.js";
-import { runSectionGate } from "../internal/guardian/section-gate.js";
-import { runTitleGate } from "../internal/guardian/title-gate.js";
+import {
+	runSectionGate,
+	sectionGateNote,
+} from "../internal/guardian/section-gate.js";
+import {
+	runTitleGate,
+	titleGateNote,
+} from "../internal/guardian/title-gate.js";
 import { ISSUE_SECTIONS, PR_SECTIONS } from "../sections/index.js";
 
 /** What a guardian check hands back to the hook dispatcher. */
@@ -88,14 +97,19 @@ const ISSUE_TITLE_CONFIG = {
 };
 
 /** Plain-text review prompt for a commit message. */
-function commitAskReason(message: string, isAmend: boolean): string {
+function commitAskReason(
+	message: string,
+	isAmend: boolean,
+	relentNote: string | null,
+): string {
 	const complaints = complaintsAbout(message);
 	const notes =
 		complaints.length > 0
 			? `Format notes: ${complaints.join("; ")}.`
 			: "Format looks clean (conventional, within the length limits).";
 	const amendNote = isAmend ? " This amends the previous commit." : "";
-	return `Review this commit before it runs.${amendNote}\n\n${truncate(message)}\n\n${notes}`;
+	const relentSuffix = relentNote ? `\n\n${relentNote}` : "";
+	return `Review this commit before it runs.${amendNote}\n\n${truncate(message)}\n\n${notes}${relentSuffix}`;
 }
 
 /**
@@ -116,7 +130,11 @@ export function checkCommitGuardian(
 	if (proseDeny) return { decision: "deny", reason: proseDeny };
 
 	const isAmend = /--amend\b/.test(command);
-	return { decision: "ask", reason: commitAskReason(message, isAmend) };
+	const relentNote = proseGateNote(deps, message);
+	return {
+		decision: "ask",
+		reason: commitAskReason(message, isAmend, relentNote),
+	};
 }
 
 /** Plain-text review prompt for a PR or issue body. */
@@ -125,10 +143,14 @@ function entityAskReason(
 	action: "create" | "edit",
 	title: string | null,
 	body: string | null,
+	relentNotes: (string | null)[],
 ): string {
 	const parts = [`Review this ${label} ${action} before it runs.`];
 	if (title) parts.push("", `Title: ${title}`);
 	if (body) parts.push("", truncate(body));
+	for (const note of relentNotes) {
+		if (note) parts.push("", note);
+	}
 	return parts.join("\n");
 }
 
@@ -166,7 +188,11 @@ export async function checkPrGuardian(
 
 	return {
 		decision: "ask",
-		reason: entityAskReason("PR", parsed.action, parsed.title, parsed.body),
+		reason: entityAskReason("PR", parsed.action, parsed.title, parsed.body, [
+			sectionGateNote(deps, parsed.body, PR_SECTION_CONFIG),
+			titleGateNote(deps, parsed.title, PR_TITLE_CONFIG),
+			proseGateNote(deps, parsed.body),
+		]),
 	};
 }
 
@@ -198,6 +224,10 @@ export function checkIssueGuardian(
 
 	return {
 		decision: "ask",
-		reason: entityAskReason("issue", parsed.action, parsed.title, parsed.body),
+		reason: entityAskReason("issue", parsed.action, parsed.title, parsed.body, [
+			sectionGateNote(deps, parsed.body, ISSUE_SECTION_CONFIG),
+			titleGateNote(deps, parsed.title, ISSUE_TITLE_CONFIG),
+			proseGateNote(deps, parsed.body),
+		]),
 	};
 }

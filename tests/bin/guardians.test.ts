@@ -81,6 +81,17 @@ describe("checkCommitGuardian", () => {
 		expect(result?.decision).toBe("ask");
 		expect(result?.reason).toContain("amends the previous commit");
 	});
+
+	it("surfaces the relented prose violation in the ask reason on retry, not just format notes", () => {
+		const { deps } = tempDeps();
+		const message = 'git commit -m "fix: use an em-dash — here"';
+		expect(checkCommitGuardian(message, deps)?.decision).toBe("deny");
+
+		const retry = checkCommitGuardian(message, deps);
+		expect(retry?.decision).toBe("ask");
+		expect(retry?.reason).toContain("still breaks prose-standard");
+		expect(retry?.reason).toContain("emdash");
+	});
 });
 
 const VALID_PR_BODY = [
