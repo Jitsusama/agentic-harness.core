@@ -63,11 +63,19 @@ export async function runSlackAuthStatus(): Promise<unknown> {
  * waiting for the user to be (or become) logged in, then verify
  * and store it. Blocks for up to five minutes; the skill calling
  * this should say so before it runs.
+ *
+ * Writes step-by-step sign-in guidance to stderr the moment the
+ * browser opens (see extractFromBrowser's onStep), not just the
+ * final JSON result: a live run with no guidance at all left a
+ * person guessing their way through a multi-tab sign-in flow with
+ * no idea what came next or what a stuck-looking screen wanted.
  */
 export async function runSlackAuthLogin(): Promise<unknown> {
 	let credentials: { token: string; cookie: string };
 	try {
-		credentials = await extractFromBrowser();
+		credentials = await extractFromBrowser(undefined, undefined, (message) => {
+			process.stderr.write(`${message}\n`);
+		});
 	} catch (err) {
 		return {
 			ok: false,

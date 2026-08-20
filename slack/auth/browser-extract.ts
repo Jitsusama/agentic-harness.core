@@ -14,8 +14,26 @@
 import * as fs from "node:fs";
 import puppeteer from "puppeteer-core";
 
-/** Default Slack URL to navigate to. */
-const DEFAULT_SLACK_URL = "https://app.slack.com";
+/**
+ * Default Slack URL to navigate to: the dedicated sign-in entry
+ * point, not the marketing homepage. app.slack.com used to be here
+ * instead, and it lands on a cookie-consent marketing page with no
+ * sign-in link visible without scrolling - a real run needed a
+ * person to find and click their own way to sign-in from there,
+ * which is what this URL skips.
+ */
+const DEFAULT_SLACK_URL = "https://slack.com/signin";
+
+/** Guidance printed once the browser opens, before the wait begins. */
+const SIGN_IN_GUIDANCE = [
+	"Opening Slack sign-in. To finish:",
+	"  1. Sign in with your email (or SSO) as usual.",
+	"  2. If asked to pick a workspace, click into the one you want.",
+	'  3. If a screen offers "Open Slack" (desktop app) vs "use Slack',
+	'     in your browser", click "use Slack in your browser" - this',
+	"     tries that automatically, but don't wait on it if it's slow.",
+	"This can take a few minutes depending on your organization's sign-in flow.",
+].join("\n");
 
 /** How often to poll for credentials (milliseconds). */
 const POLL_INTERVAL_MS = 1000;
@@ -62,12 +80,18 @@ function findChrome(): string {
  * needed. Polls localStorage for the xoxc- token and the
  * browser's cookie jar for the xoxd- session cookie.
  *
- * @param slackUrl - Slack workspace URL (default: app.slack.com)
+ * @param slackUrl - Slack URL to navigate to (default: the sign-in
+ *   entry point, not a workspace or the marketing homepage)
  * @param timeoutMs - How long to wait before giving up
+ * @param onStep - Called once, right after the browser opens, with
+ *   the guidance a person watching needs to actually finish sign-in.
+ *   Adapter-supplied rather than written straight to stderr here, so
+ *   a host that isn't a bare terminal can surface it its own way.
  */
 export async function extractFromBrowser(
 	slackUrl = DEFAULT_SLACK_URL,
 	timeoutMs = DEFAULT_TIMEOUT_MS,
+	onStep?: (message: string) => void,
 ): Promise<BrowserCredentials> {
 	const chromePath = findChrome();
 	const browser = await puppeteer.launch({
@@ -80,6 +104,7 @@ export async function extractFromBrowser(
 		const context = browser.defaultBrowserContext();
 		const page = (await browser.pages())[0] ?? (await browser.newPage());
 		await page.goto(slackUrl, { waitUntil: "domcontentloaded" });
+		onStep?.(SIGN_IN_GUIDANCE);
 
 		const startTime = Date.now();
 
