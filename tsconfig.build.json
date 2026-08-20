@@ -36,6 +36,10 @@
 		"web",
 		"slack",
 		"google",
+		"governance",
+		"observability",
+		"completion",
+		"advisor",
 		"bin"
 	]
 }

@@ -8,7 +8,7 @@
  * separate from any other structured store an adapter keeps.
  */
 
-import { openDb } from "./db.js";
+import { openDb } from "../internal/sqlite/db.js";
 import { serializeScope } from "./scope.js";
 import type {
 	Fact,

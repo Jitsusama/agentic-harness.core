@@ -1,8 +1,9 @@
 /**
- * Thin promise wrapper over the callback-based sqlite3 driver.
- * sqlite3 is a native module, so it is lazy-imported on first
- * open; callers speak promises and never touch the driver
- * directly.
+ * Thin promise wrapper over the callback-based sqlite3
+ * driver, shared by the local structured stores (memory,
+ * observability). sqlite3 is a native module, so it is
+ * lazy-imported on first open; callers speak promises and
+ * never touch the driver directly.
  */
 
 /** Minimal shape of the sqlite3 Database we depend on. */
