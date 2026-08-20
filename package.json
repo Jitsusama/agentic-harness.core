@@ -80,11 +80,13 @@
 		"./slack/auth/extract": "./dist/slack/auth/extract.js",
 		"./slack/auth/oauth": "./dist/slack/auth/oauth.js",
 		"./slack/auth/server": "./dist/slack/auth/server.js",
+		"./slack/types": "./dist/slack/types.js",
 		"./google": "./dist/google/index.js",
 		"./google/auth/browser": "./dist/google/auth/browser.js",
 		"./google/auth/oauth": "./dist/google/auth/oauth.js",
 		"./google/auth/server": "./dist/google/auth/server.js",
-		"./google/auth/setup-instructions": "./dist/google/auth/setup-instructions.js"
+		"./google/auth/setup-instructions": "./dist/google/auth/setup-instructions.js",
+		"./google/types": "./dist/google/types.js"
 	},
 	"bin": {
 		"agentic-harness-core": "./dist/bin/cli.js"
