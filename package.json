@@ -50,6 +50,7 @@
 		"./guardian/section-gate": "./dist/internal/guardian/section-gate.js",
 		"./guardian/title-gate": "./dist/internal/guardian/title-gate.js",
 		"./guardian/redirect-gate": "./dist/internal/guardian/redirect-gate.js",
+		"./guardian/history-gate": "./dist/internal/guardian/history-gate.js",
 		"./clock": "./dist/clock/index.js",
 		"./exec": "./dist/exec/index.js",
 		"./remote": "./dist/remote/index.js",

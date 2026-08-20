@@ -18,6 +18,10 @@ import { effectiveCwd, tokenize } from "../command/index.js";
 import { checkGitCli } from "../git-cli/index.js";
 import { checkGithubCli } from "../github-cli/index.js";
 import {
+	type DestructiveMatch,
+	detectDestructiveCommand,
+} from "../internal/guardian/history-gate.js";
+import {
 	type Attestation,
 	attest,
 	idleLoop,
@@ -121,12 +125,28 @@ interface PreToolUseInput {
 	tool_input?: { command?: string };
 }
 
+/** A plain-text explanation of why a destructive command was flagged. */
+function historyReason(match: DestructiveMatch): string {
+	const label = match.severity === "irrecoverable" ? "Destructive" : "Risky";
+	return `${label} command: ${match.description}`;
+}
+
 /**
- * Claude Code's PreToolUse hook contract for a Bash call: deny with
- * a reason, or say nothing so the normal permission flow decides.
- * Never emit an explicit "allow" here — that would bypass whatever
- * else (other hooks, the user's permission mode) would otherwise
- * decide, for every bash command this hook doesn't flag.
+ * Claude Code's PreToolUse hook contract for a Bash call: deny with a
+ * reason, ask with a reason, or say nothing so the normal permission
+ * flow decides. Never emit an explicit "allow" here — that would
+ * bypass whatever else (other hooks, the user's permission mode)
+ * would otherwise decide, for every bash command this hook doesn't
+ * flag.
+ *
+ * Deny takes precedence over ask: a hard-rule violation (an amend, an
+ * unattributed PR) is not a judgment call the way a destructive git
+ * command is, so it is refused outright rather than softened into a
+ * question. history-guardian's own review never rewrites, so "ask" is
+ * a complete adapter for it — unlike a guardian that does rewrite,
+ * which a hook can only approximate as deny-and-retry, this one maps
+ * onto Claude Code's native permission prompt exactly as pi's own
+ * allow/block confirmation does.
  */
 async function runHookPreBash(): Promise<string> {
 	const input = await readStdin();
@@ -137,19 +157,32 @@ async function runHookPreBash(): Promise<string> {
 	const cwd = effectiveCwd(tokenize(command), process.cwd());
 	ensureAttributionHook("dir" in cwd ? cwd.dir : process.cwd());
 
-	const reason =
+	const denyReason =
 		checkGitCli(command) ??
 		checkGithubCli(command) ??
 		checkAttribution(command);
-	if (!reason) return "";
+	if (denyReason) {
+		return JSON.stringify({
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				permissionDecision: "deny",
+				permissionDecisionReason: denyReason,
+			},
+		});
+	}
 
-	return JSON.stringify({
-		hookSpecificOutput: {
-			hookEventName: "PreToolUse",
-			permissionDecision: "deny",
-			permissionDecisionReason: reason,
-		},
-	});
+	const destructive = detectDestructiveCommand(command);
+	if (destructive) {
+		return JSON.stringify({
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				permissionDecision: "ask",
+				permissionDecisionReason: historyReason(destructive),
+			},
+		});
+	}
+
+	return "";
 }
 
 async function main(): Promise<void> {

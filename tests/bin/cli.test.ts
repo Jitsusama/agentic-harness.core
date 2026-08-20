@@ -177,6 +177,53 @@ describe("hook pre-bash", () => {
 			"Co-Authored-By AI via [Claude Code]",
 		);
 	});
+
+	it("asks before an irrecoverable git command, naming the risk", async () => {
+		const output = await runHook(
+			JSON.stringify({
+				tool_name: "Bash",
+				tool_input: { command: "git reset --hard" },
+			}),
+		);
+		const parsed = JSON.parse(output);
+		expect(parsed.hookSpecificOutput.permissionDecision).toBe("ask");
+		expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain(
+			"Destructive command",
+		);
+		expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain(
+			"discards all uncommitted changes",
+		);
+	});
+
+	it("asks before a risky git command, naming it as recoverable", async () => {
+		const output = await runHook(
+			JSON.stringify({
+				tool_name: "Bash",
+				tool_input: { command: "git rebase -i HEAD~2" },
+			}),
+		);
+		const parsed = JSON.parse(output);
+		expect(parsed.hookSpecificOutput.permissionDecision).toBe("ask");
+		expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain(
+			"Risky command",
+		);
+	});
+
+	it("denies rather than asks when a command trips both a hard rule and a destructive pattern", async () => {
+		// The compound call trips checkGitCli (a commit chained with a
+		// state change) and the push --force also matches a destructive
+		// pattern; the precedence is the point, a hard rule must never
+		// soften to a question just because a destructive pattern also
+		// matched.
+		const output = await runHook(
+			JSON.stringify({
+				tool_name: "Bash",
+				tool_input: { command: "git commit -m x && git push --force" },
+			}),
+		);
+		const parsed = JSON.parse(output);
+		expect(parsed.hookSpecificOutput.permissionDecision).toBe("deny");
+	});
 });
 
 async function runMemory(args: string[], stdin: string) {
