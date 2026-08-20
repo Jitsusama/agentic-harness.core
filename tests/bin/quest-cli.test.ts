@@ -79,8 +79,14 @@ describe("quest CLI, document stage machine", () => {
 		expect(draft.ok && draft.details?.id).toMatch(/^PLAN-/);
 		const build = await run("build");
 		expect(build.ok).toBe(true);
+		expect(build.ok && build.message).toMatch(
+			/^Now building against plan PLAN-\S+\.$/,
+		);
 		const conclude = await run("conclude");
 		expect(conclude.ok).toBe(true);
+		expect(conclude.ok && conclude.message).toMatch(
+			/^plan PLAN-\S+ is now concluded\.$/,
+		);
 	});
 
 	it("reopens a concluded quest", async () => {

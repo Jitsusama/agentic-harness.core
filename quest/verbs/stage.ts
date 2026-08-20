@@ -51,7 +51,7 @@ import {
 	stampQuestUpdated,
 	writeDocumentStage,
 } from "../lifecycle.js";
-import { type TransitionAction, transition } from "../machine.js";
+import { type Stage, type TransitionAction, transition } from "../machine.js";
 import type { QuestState } from "../state.js";
 import { subdirForDocumentId } from "./queries.js";
 import {
@@ -77,6 +77,28 @@ function pinPrimaryPlanIfUnset(questDir: string, planId: string): void {
 	mutateQuestFrontMatter(questDir, (fm) =>
 		fm.primaryPlanId ? undefined : { ...fm, primaryPlanId: planId },
 	);
+}
+
+/**
+ * Phrase the landed-transition message for a stage naturally.
+ * `Stage` values are past-tense/gerund-shaped, not nouns, so
+ * plugging one straight into "Now ${stage} on X" reads wrong for
+ * every stage but "think" ("Now build on plan X", "Now concluded
+ * on plan X"); each stage gets its own natural phrasing instead.
+ */
+function describeStageResult(stage: Stage, state: QuestState): string {
+	const kind = state.documentKind;
+	const id = state.documentId;
+	switch (stage) {
+		case "build":
+			return `Now building against ${kind} ${id}.`;
+		case "concluded":
+			return `${kind} ${id} is now concluded.`;
+		case "retired":
+			return `${kind} ${id} is now retired.`;
+		default:
+			return `Now thinking about ${kind} ${id}.`;
+	}
 }
 
 /**
@@ -223,10 +245,9 @@ export function stageTransition(
 		);
 	}
 	if (state.questDir) stampQuestUpdated(state);
-	return ok(
-		`Now ${result.state.stage} on ${state.documentKind} ${state.documentId}.`,
-		{ stage: result.state.stage },
-	);
+	return ok(describeStageResult(result.state.stage, state), {
+		stage: result.state.stage,
+	});
 }
 
 /**
