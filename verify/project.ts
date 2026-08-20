@@ -22,11 +22,12 @@ export function findProject(startDir: string): ProjectInfo | null {
 			try {
 				const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
 					scripts?: Record<string, string>;
+					packageManager?: string;
 				};
 				return {
 					dir,
 					scripts: pkg.scripts ?? {},
-					packageManager: detectPackageManager(dir),
+					packageManager: detectPackageManager(dir, pkg.packageManager),
 				};
 			} catch {
 				return null;
@@ -38,10 +39,18 @@ export function findProject(startDir: string): ProjectInfo | null {
 	}
 }
 
-/** Infer the package manager from the lockfile present in dir. */
-export function detectPackageManager(dir: string): string {
+/**
+ * Infer the package manager: an explicit Corepack `packageManager`
+ * field wins, then the lockfile present in dir. Falls back to npm,
+ * not pnpm, when neither is present: npm ships with Node itself, so
+ * it is the one manager guaranteed to exist, unlike a guess that
+ * turns "no lockfile yet" (a freshly scaffolded project, before the
+ * first install) into a false "command not found" failure.
+ */
+export function detectPackageManager(dir: string, declared?: string): string {
+	const fromField = declared?.split("@")[0]?.trim();
+	if (fromField) return fromField;
 	if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm";
 	if (existsSync(join(dir, "yarn.lock"))) return "yarn";
-	if (existsSync(join(dir, "package-lock.json"))) return "npm";
-	return "pnpm";
+	return "npm";
 }

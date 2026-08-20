@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 describe("detectPackageManager", () => {
-	it("maps each lockfile to its manager and defaults to pnpm", () => {
+	it("maps each lockfile to its manager and defaults to npm", () => {
 		writeFileSync(join(dir, "pnpm-lock.yaml"), "");
 		expect(detectPackageManager(dir)).toBe("pnpm");
 
@@ -29,9 +29,17 @@ describe("detectPackageManager", () => {
 		expect(detectPackageManager(npmDir)).toBe("npm");
 		rmSync(npmDir, { recursive: true, force: true });
 
+		// No lockfile at all (e.g. a freshly scaffolded project before
+		// its first install) must default to npm, not pnpm: npm ships
+		// with Node, so it is the one manager guaranteed to exist.
 		const bareDir = mkdtempSync(join(tmpdir(), "verify-bare-"));
-		expect(detectPackageManager(bareDir)).toBe("pnpm");
+		expect(detectPackageManager(bareDir)).toBe("npm");
 		rmSync(bareDir, { recursive: true, force: true });
+	});
+
+	it("prefers an explicit packageManager field over any lockfile", () => {
+		writeFileSync(join(dir, "yarn.lock"), "");
+		expect(detectPackageManager(dir, "pnpm@8.10.0")).toBe("pnpm");
 	});
 });
 
