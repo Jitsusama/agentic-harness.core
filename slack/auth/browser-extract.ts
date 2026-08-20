@@ -111,7 +111,11 @@ export async function extractFromBrowser(
 
 		throw new Error(
 			"Timed out waiting for Slack credentials. " +
-				"Make sure you are logged into Slack in the browser window.",
+				"Make sure you are logged into Slack in the browser window, " +
+				"and that you have clicked into a specific workspace: a fresh " +
+				"browser profile has no session yet, so app.slack.com shows a " +
+				"workspace picker after sign-in rather than opening one directly, " +
+				"and nothing here is extractable until a workspace is open.",
 		);
 	} finally {
 		await browser.close();
