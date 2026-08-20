@@ -89,6 +89,15 @@ export async function extractFromBrowser(
 			const pages = await browser.pages();
 			const activePage = pages[pages.length - 1] ?? page;
 
+			// A workspace's own SSB redirect page (cloud-native.slack.com/
+			// ssb/redirect, and its equivalents) defaults to prompting for
+			// the desktop app, with a "use Slack in your browser" link as
+			// the only way to reach the web client instead. Nothing here
+			// wants the desktop app, and nothing clicks that link on its
+			// own, so a real run sat on that splash page for the whole
+			// five-minute budget until this was added.
+			await clickUseInBrowser(activePage);
+
 			// The cookie lives in the browser context, not the page,
 			// so it survives navigations. Check it first.
 			const cookies = await context.cookies();
@@ -119,6 +128,42 @@ export async function extractFromBrowser(
 		);
 	} finally {
 		await browser.close();
+	}
+}
+
+/**
+ * Click a "use Slack in your browser" link if the active page is
+ * showing one, so the desktop-app splash page a workspace redirect
+ * lands on doesn't sit there indefinitely. A no-op, never throwing,
+ * on any page that isn't showing one (mid-navigation, cross-origin,
+ * or just a different page entirely).
+ *
+ * Dispatches a real mouse click at the link's on-screen position
+ * rather than calling the DOM `.click()` method in-page: the latter
+ * produces a synthetic event (`isTrusted: false`), which this splash
+ * page's own handler silently ignores, exactly the "nothing changes"
+ * a real run showed before this was found. A CDP-level mouse click
+ * is indistinguishable from one a person made.
+ */
+async function clickUseInBrowser(
+	page: import("puppeteer-core").Page,
+): Promise<void> {
+	try {
+		const center = await page.evaluate(() => {
+			const links = Array.from(document.querySelectorAll("a"));
+			const match = links.find((a) =>
+				/use slack in (your|the) browser/i.test(a.textContent ?? ""),
+			);
+			if (!match) return null;
+			const rect = match.getBoundingClientRect();
+			if (rect.width === 0 || rect.height === 0) return null;
+			return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+		});
+		if (center) await page.mouse.click(center.x, center.y);
+	} catch {
+		// Execution context destroyed, page closed, or cross-origin
+		// frame. Same as extractTokenFromPage: all expected, so the
+		// next poll just tries again.
 	}
 }
 
