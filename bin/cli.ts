@@ -30,12 +30,19 @@ import {
 } from "../tdd/index.js";
 import { runVerify } from "../verify/index.js";
 import { checkAttribution, ensureAttributionHook } from "./attribution.js";
+import { fileGateDeps } from "./gate-deps.js";
+import {
+	checkCommitGuardian,
+	checkIssueGuardian,
+	checkPrGuardian,
+} from "./guardians.js";
 import {
 	runMemoryEdit,
 	runMemoryRecall,
 	runMemoryReflect,
 	runMemoryRetain,
 } from "./memory.js";
+import { processExec } from "./process-exec.js";
 import { runQuestAction } from "./quest.js";
 
 /** Where a loop's state lives when the caller doesn't override it. */
@@ -131,6 +138,20 @@ function historyReason(match: DestructiveMatch): string {
 	return `${label} command: ${match.description}`;
 }
 
+/** Build the hook's JSON stdout for a deny or ask decision. */
+function decisionOutput(
+	permissionDecision: "deny" | "ask",
+	permissionDecisionReason: string,
+): string {
+	return JSON.stringify({
+		hookSpecificOutput: {
+			hookEventName: "PreToolUse",
+			permissionDecision,
+			permissionDecisionReason,
+		},
+	});
+}
+
 /**
  * Claude Code's PreToolUse hook contract for a Bash call: deny with a
  * reason, ask with a reason, or say nothing so the normal permission
@@ -139,13 +160,15 @@ function historyReason(match: DestructiveMatch): string {
  * would otherwise decide, for every bash command this hook doesn't
  * flag.
  *
- * Deny takes precedence over ask: a hard-rule violation (an amend, an
- * unattributed PR) is not a judgment call the way a destructive git
- * command is, so it is refused outright rather than softened into a
- * question. history-guardian's own review never rewrites, so "ask" is
- * a complete adapter for it — unlike a guardian that does rewrite,
- * which a hook can only approximate as deny-and-retry, this one maps
- * onto Claude Code's native permission prompt exactly as pi's own
+ * Deny takes precedence over ask throughout: a hard-rule violation
+ * (an amend, an unattributed PR, a content-gate violation) is not a
+ * judgment call the way a destructive command or an otherwise-clean
+ * commit/PR/issue is, so it is refused outright rather than softened
+ * into a question. Every guardian wired in here (history, commit, PR,
+ * issue) never rewrites in its own pi-side review either, so "ask" is
+ * a complete adapter for all of them — unlike a guardian that does
+ * rewrite, which a hook can only approximate as deny-and-retry, these
+ * map onto Claude Code's native permission prompt exactly as pi's own
  * allow/block confirmation does.
  */
 async function runHookPreBash(): Promise<string> {
@@ -155,31 +178,25 @@ async function runHookPreBash(): Promise<string> {
 	if (payload.tool_name !== "Bash" || !command) return "";
 
 	const cwd = effectiveCwd(tokenize(command), process.cwd());
-	ensureAttributionHook("dir" in cwd ? cwd.dir : process.cwd());
+	const resolvedCwd = "dir" in cwd ? cwd.dir : process.cwd();
+	ensureAttributionHook(resolvedCwd);
 
 	const denyReason =
 		checkGitCli(command) ??
 		checkGithubCli(command) ??
 		checkAttribution(command);
-	if (denyReason) {
-		return JSON.stringify({
-			hookSpecificOutput: {
-				hookEventName: "PreToolUse",
-				permissionDecision: "deny",
-				permissionDecisionReason: denyReason,
-			},
-		});
-	}
+	if (denyReason) return decisionOutput("deny", denyReason);
 
 	const destructive = detectDestructiveCommand(command);
-	if (destructive) {
-		return JSON.stringify({
-			hookSpecificOutput: {
-				hookEventName: "PreToolUse",
-				permissionDecision: "ask",
-				permissionDecisionReason: historyReason(destructive),
-			},
-		});
+	if (destructive) return decisionOutput("ask", historyReason(destructive));
+
+	const deps = fileGateDeps(resolvedCwd);
+	const guardianResult =
+		checkCommitGuardian(command, deps) ??
+		(await checkPrGuardian(command, resolvedCwd, deps, processExec)) ??
+		checkIssueGuardian(command, deps);
+	if (guardianResult) {
+		return decisionOutput(guardianResult.decision, guardianResult.reason);
 	}
 
 	return "";

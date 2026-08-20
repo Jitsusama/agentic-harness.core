@@ -224,6 +224,69 @@ describe("hook pre-bash", () => {
 		const parsed = JSON.parse(output);
 		expect(parsed.hookSpecificOutput.permissionDecision).toBe("deny");
 	});
+
+	it("asks before a commit that clears the prose gate, showing the message", async () => {
+		const output = await runHook(
+			JSON.stringify({
+				tool_name: "Bash",
+				tool_input: { command: 'git commit -m "fix: correct the thing"' },
+			}),
+		);
+		const parsed = JSON.parse(output);
+		expect(parsed.hookSpecificOutput.permissionDecision).toBe("ask");
+		expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain(
+			"fix: correct the thing",
+		);
+	});
+
+	it("denies a commit whose message trips the prose gate", async () => {
+		const output = await runHook(
+			JSON.stringify({
+				tool_name: "Bash",
+				tool_input: { command: 'git commit -m "feat: use an em-dash — here"' },
+			}),
+		);
+		const parsed = JSON.parse(output);
+		expect(parsed.hookSpecificOutput.permissionDecision).toBe("deny");
+	});
+
+	it("denies a PR body missing its sanctioned sections", async () => {
+		// Attributed, so the run reaches the section gate rather than
+		// stopping at the earlier, unrelated attribution deny check.
+		const output = await runHook(
+			JSON.stringify({
+				tool_name: "Bash",
+				tool_input: {
+					command:
+						"gh pr create --title \"Fix the Login Bug\" --body-file - <<'EOF'\nJust a plain body.\n\n---\n*Co-Authored-By AI via [Claude Code](https://claude.com/claude-code)*\nEOF",
+				},
+			}),
+		);
+		const parsed = JSON.parse(output);
+		expect(parsed.hookSpecificOutput.permissionDecision).toBe("deny");
+		expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain(
+			"section",
+		);
+	});
+
+	it("denies an issue title that reads as a sentence, not Title Case", async () => {
+		// Attributed, so the run reaches the title gate rather than
+		// stopping at the earlier, unrelated attribution deny check.
+		const output = await runHook(
+			JSON.stringify({
+				tool_name: "Bash",
+				tool_input: {
+					command:
+						"gh issue create --title \"the login page is broken\" --body-file - <<'EOF'\n### 🌐 Situation\nx\n\n### 🎯 Outcome\nx\n\n### ✅ Acceptance\nx\n\n---\n*Co-Authored-By AI via [Claude Code](https://claude.com/claude-code)*\nEOF",
+				},
+			}),
+		);
+		const parsed = JSON.parse(output);
+		expect(parsed.hookSpecificOutput.permissionDecision).toBe("deny");
+		expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain(
+			"title",
+		);
+	});
 });
 
 async function runMemory(args: string[], stdin: string) {
