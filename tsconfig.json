@@ -42,6 +42,8 @@
 		"work",
 		"review",
 		"web",
+		"slack",
+		"google",
 		"bin",
 		"tests"
 	]

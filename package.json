@@ -4,6 +4,9 @@
 	"description": "Pi-agnostic business logic for agentic-harness: state machines, guardian decisions, quest/TDD domain model.",
 	"license": "MIT",
 	"type": "module",
+	"overrides": {
+		"google-auth-library": "$google-auth-library"
+	},
 	"exports": {
 		"./tdd": "./dist/tdd/index.js",
 		"./tdd/presentation": "./dist/tdd/presentation.js",
@@ -70,7 +73,18 @@
 		"./web/snapshot": "./dist/web/snapshot/index.js",
 		"./web/target": "./dist/web/target/index.js",
 		"./web/telemetry": "./dist/web/telemetry/index.js",
-		"./web/wait": "./dist/web/wait/index.js"
+		"./web/wait": "./dist/web/wait/index.js",
+		"./slack": "./dist/slack/index.js",
+		"./slack/auth/browser": "./dist/slack/auth/browser.js",
+		"./slack/auth/browser-extract": "./dist/slack/auth/browser-extract.js",
+		"./slack/auth/extract": "./dist/slack/auth/extract.js",
+		"./slack/auth/oauth": "./dist/slack/auth/oauth.js",
+		"./slack/auth/server": "./dist/slack/auth/server.js",
+		"./google": "./dist/google/index.js",
+		"./google/auth/browser": "./dist/google/auth/browser.js",
+		"./google/auth/oauth": "./dist/google/auth/oauth.js",
+		"./google/auth/server": "./dist/google/auth/server.js",
+		"./google/auth/setup-instructions": "./dist/google/auth/setup-instructions.js"
 	},
 	"bin": {
 		"agentic-harness-core": "./dist/bin/cli.js"
@@ -95,6 +109,8 @@
 	"dependencies": {
 		"axe-core": "^4.12.1",
 		"defuddle": "^0.19.1",
+		"google-auth-library": "^10.9.0",
+		"googleapis": "^173.0.0",
 		"jsdom": "^29.1.1",
 		"jsonpath-plus": "^10.4.0",
 		"pixelmatch": "^7.2.0",
