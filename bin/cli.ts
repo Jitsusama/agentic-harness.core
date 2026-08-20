@@ -44,6 +44,7 @@ import {
 } from "./memory.js";
 import { processExec } from "./process-exec.js";
 import { runQuestAction } from "./quest.js";
+import { runSlackAuthLogin, runSlackAuthStatus } from "./slack-auth.js";
 
 /** Where a loop's state lives when the caller doesn't override it. */
 const DEFAULT_STATE_FILE = ".agentic-harness/tdd-loop.json";
@@ -254,6 +255,16 @@ async function main(): Promise<void> {
 		if (handler) {
 			const input = await readStdin();
 			process.stdout.write(`${JSON.stringify(await handler(input))}\n`);
+			return;
+		}
+	}
+	if (options.domain === "slack-auth") {
+		if (options.command === "status") {
+			process.stdout.write(`${JSON.stringify(await runSlackAuthStatus())}\n`);
+			return;
+		}
+		if (options.command === "login") {
+			process.stdout.write(`${JSON.stringify(await runSlackAuthLogin())}\n`);
 			return;
 		}
 	}
