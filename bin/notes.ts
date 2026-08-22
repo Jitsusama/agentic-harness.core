@@ -5,23 +5,44 @@
  * there is no `.agentic-harness/notes-state.json` to load or
  * save.
  *
- * Where quest's questsRoot defaults to one shared,
- * cross-repo location (a single campaign log every tool on
- * the machine sees), notesRoot defaults to the current
- * working directory: a notes archive is a property of the
- * repo you're standing in, not a machine-wide singleton.
- * Override with `--notes-root` or `AGENTIC_HARNESS_NOTES_ROOT`
- * when the archive isn't cwd itself.
+ * notesRoot resolves the same way quest's questsRoot does: a
+ * single default location every tool on the machine sees
+ * unless told otherwise, not something that shifts under you
+ * as cwd changes. There's no sibling pi extension to alias
+ * onto (quest's default points at the exact path
+ * agentic-harness.pi's quest-workflow extension already
+ * writes to), so notes gets its own XDG-rooted default
+ * instead. Override with `--notes-root` or
+ * `AGENTIC_HARNESS_NOTES_ROOT` when the archive lives
+ * somewhere else -- e.g. a specific repo's notes tree.
  */
 
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { create } from "../notes/verbs/create.js";
 import { reparent, retitle, retype, tag } from "../notes/verbs/mutate.js";
 import { find, show, tree, types } from "../notes/verbs/queries.js";
 import { reindex } from "../notes/verbs/reindex.js";
 import type { NoteResult, NoteToolParams } from "../notes/verbs/shared.js";
 
+/**
+ * Default notesRoot: an XDG data-dir location, mirroring how
+ * `bin/quest.ts`'s `defaultQuestsRoot` resolves.
+ */
+export function defaultNotesRoot(
+	env: NodeJS.ProcessEnv = process.env,
+	home = homedir(),
+): string {
+	const override = env.XDG_DATA_HOME;
+	const root =
+		override && override.length > 0 ? override : join(home, ".local", "share");
+	return join(root, "agentic-harness", "notes");
+}
+
 function resolveNotesRoot(flagValue: string | undefined): string {
-	return flagValue ?? process.env.AGENTIC_HARNESS_NOTES_ROOT ?? process.cwd();
+	return (
+		flagValue ?? process.env.AGENTIC_HARNESS_NOTES_ROOT ?? defaultNotesRoot()
+	);
 }
 
 export interface NotesCliOptions {
