@@ -42,6 +42,7 @@ import {
 	runMemoryReflect,
 	runMemoryRetain,
 } from "./memory.js";
+import { runNotesAction } from "./notes.js";
 import { processExec } from "./process-exec.js";
 import { runQuestAction } from "./quest.js";
 import { runSlackAuthLogin, runSlackAuthStatus } from "./slack-auth.js";
@@ -56,18 +57,20 @@ interface Options {
 	command: string;
 	stateFile: string;
 	questsRoot: string | undefined;
+	notesRoot: string | undefined;
 }
 
 function parseArgs(argv: string[]): Options {
 	const [domain, command, ...rest] = argv;
 	if (!domain || !command) {
 		throw new Error(
-			"Usage: agentic-harness-core <domain> <command> [--state-file <path>] [--quests-root <path>]",
+			"Usage: agentic-harness-core <domain> <command> [--state-file <path>] [--quests-root <path>] [--notes-root <path>]",
 		);
 	}
 	let stateFile =
 		domain === "quest" ? DEFAULT_QUEST_STATE_FILE : DEFAULT_STATE_FILE;
 	let questsRoot: string | undefined;
+	let notesRoot: string | undefined;
 	for (let i = 0; i < rest.length; i++) {
 		if (rest[i] === "--state-file") {
 			const value = rest[i + 1];
@@ -83,9 +86,16 @@ function parseArgs(argv: string[]): Options {
 			}
 			questsRoot = value;
 			i++;
+		} else if (rest[i] === "--notes-root") {
+			const value = rest[i + 1];
+			if (!value) {
+				throw new Error("--notes-root requires a path");
+			}
+			notesRoot = value;
+			i++;
 		}
 	}
-	return { domain, command, stateFile, questsRoot };
+	return { domain, command, stateFile, questsRoot, notesRoot };
 }
 
 async function readStdin(): Promise<string> {
@@ -238,6 +248,17 @@ async function main(): Promise<void> {
 				stateFile: options.stateFile,
 				questsRoot: options.questsRoot,
 			},
+			params,
+		);
+		process.stdout.write(`${JSON.stringify(result)}\n`);
+		process.exitCode = result.ok ? 0 : 1;
+		return;
+	}
+	if (options.domain === "notes") {
+		const input = await readStdin();
+		const params = input.trim().length > 0 ? JSON.parse(input) : {};
+		const result = await runNotesAction(
+			{ action: options.command, notesRoot: options.notesRoot },
 			params,
 		);
 		process.stdout.write(`${JSON.stringify(result)}\n`);
