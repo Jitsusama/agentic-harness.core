@@ -7,6 +7,14 @@
 	"overrides": {
 		"google-auth-library": "$google-auth-library"
 	},
+	"pnpm": {
+		"overrides": {
+			"google-auth-library": "$google-auth-library"
+		},
+		"onlyBuiltDependencies": [
+			"sqlite3"
+		]
+	},
 	"exports": {
 		"./tdd": "./dist/tdd/index.js",
 		"./tdd/presentation": "./dist/tdd/presentation.js",
@@ -106,11 +114,11 @@
 	],
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json",
-		"prepare": "npm run build",
+		"prepare": "tsc -p tsconfig.build.json",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
 		"typecheck": "tsc --noEmit",
-		"pretest": "npm run build",
+		"pretest": "tsc -p tsconfig.build.json",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:browser": "vitest run --config vitest.browser.config.ts"
