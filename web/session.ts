@@ -204,6 +204,8 @@ import {
 	enabledRules,
 	foldBehind,
 	foldPair,
+	MOTION_CAPTURE,
+	type MotionCapture,
 	type PageBox,
 	type PaintedSide,
 	type PairReport,
@@ -2467,6 +2469,39 @@ export class BrowserSession {
 			returnByValue: true,
 		});
 		return result.value as FocusHolder | undefined;
+	}
+
+	/**
+	 * What the page keeps doing when asked to hold still.
+	 *
+	 * Emulates prefers-reduced-motion: reduce, reloads so the page
+	 * decides its motion under the preference rather than being
+	 * caught mid-flight, reads what is still moving, then puts the
+	 * emulation back exactly as it was. The reload matters: a page
+	 * picks most of its motion at load, so flipping the preference
+	 * on a settled page measures its reaction to a change, not its
+	 * behaviour for a visitor who arrived with the preference set.
+	 */
+	async motionUnderReduce(): Promise<MotionCapture> {
+		await this.ready();
+		const before = this.emulation.asked;
+		try {
+			await this.emulation.change({ reducedMotion: true });
+			await this.reload();
+			const response = await this.cdp.send("Runtime.evaluate", {
+				expression: MOTION_CAPTURE,
+				returnByValue: true,
+			});
+			if (response.exceptionDetails) {
+				const threw = describeThrow(response.exceptionDetails);
+				throw new Error(`Could not read the motion: ${threw.message}`);
+			}
+			return response.result.value as MotionCapture;
+		} finally {
+			// Wholesale, not merged: a merge cannot clear the reduce
+			// this added when the session had no opinion before.
+			await this.emulation.restore(before);
+		}
 	}
 
 	async structure(): Promise<readonly StructureNode[]> {
