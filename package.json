@@ -4,9 +4,6 @@
 	"description": "Pi-agnostic business logic for agentic-harness: state machines, guardian decisions, quest/TDD domain model.",
 	"license": "MIT",
 	"type": "module",
-	"publishConfig": {
-		"registry": "https://npm.pkg.github.com"
-	},
 	"overrides": {
 		"google-auth-library": "$google-auth-library"
 	},
