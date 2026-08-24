@@ -230,6 +230,7 @@ import {
 	type EvalValue,
 	evaluationSource,
 } from "./evaluate/index.js";
+import { HYDRATION_CAPTURE, type HydrationCapture } from "./hydration/index.js";
 import {
 	categoriesFor,
 	compareHeap,
@@ -2575,6 +2576,30 @@ export class BrowserSession {
 			throw new Error(`Could not measure the targets: ${threw.message}`);
 		}
 		return response.result.value as readonly CapturedTarget[];
+	}
+
+	/**
+	 * Both renders of the current page: what the server sends and
+	 * what hydration made of it.
+	 *
+	 * The server render is fetched from inside the page, so it
+	 * travels with the session's cookies, and parsed without
+	 * running a script. Judging the capture is the hydration
+	 * subdomain's job; pair it with logs() so the framework's own
+	 * complaints are read beside the comparison.
+	 */
+	async hydration(): Promise<HydrationCapture> {
+		await this.ready();
+		const response = await this.cdp.send("Runtime.evaluate", {
+			expression: HYDRATION_CAPTURE,
+			awaitPromise: true,
+			returnByValue: true,
+		});
+		if (response.exceptionDetails) {
+			const threw = describeThrow(response.exceptionDetails);
+			throw new Error(`Could not read the renders: ${threw.message}`);
+		}
+		return response.result.value as HydrationCapture;
 	}
 
 	/**

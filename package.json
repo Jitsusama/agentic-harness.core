@@ -73,6 +73,7 @@
 		"./web/environment": "./dist/web/environment/index.js",
 		"./web/environment/devices": "./dist/web/environment/devices.js",
 		"./web/evaluate": "./dist/web/evaluate/index.js",
+		"./web/hydration": "./dist/web/hydration/index.js",
 		"./web/input": "./dist/web/input/index.js",
 		"./web/mermaid": "./dist/web/mermaid.js",
 		"./web/perf": "./dist/web/perf/index.js",
