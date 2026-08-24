@@ -217,7 +217,12 @@ import {
 	type VisualNode,
 	visualCaptureSource,
 } from "./audit/index.js";
-import { inventorySource, type StyleSample } from "./design/index.js";
+import {
+	inventorySource,
+	type StyleSample,
+	type TextBlock,
+	TYPOGRAPHY_CAPTURE,
+} from "./design/index.js";
 import {
 	describeThrow,
 	type EvalFrame,
@@ -2570,6 +2575,23 @@ export class BrowserSession {
 			throw new Error(`Could not measure the targets: ${threw.message}`);
 		}
 		return response.result.value as readonly CapturedTarget[];
+	}
+
+	/**
+	 * How the page's text blocks wrap, measured from real line
+	 * boxes rather than estimated from fonts.
+	 */
+	async typography(): Promise<readonly TextBlock[]> {
+		await this.ready();
+		const response = await this.cdp.send("Runtime.evaluate", {
+			expression: TYPOGRAPHY_CAPTURE,
+			returnByValue: true,
+		});
+		if (response.exceptionDetails) {
+			const threw = describeThrow(response.exceptionDetails);
+			throw new Error(`Could not measure the text: ${threw.message}`);
+		}
+		return response.result.value as readonly TextBlock[];
 	}
 
 	async layout(): Promise<{
