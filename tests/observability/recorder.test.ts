@@ -35,8 +35,8 @@ describe("runRecordFrom", () => {
 
 		expect(record.verifyOutcome).toBe("passed");
 		expect(record.warningCount).toBe(2);
-		expect(record.tokens.total).toBe(170);
-		expect(record.cost.total).toBeCloseTo(0.33);
+		expect(record.tokens?.total).toBe(170);
+		expect(record.cost?.total).toBeCloseTo(0.33);
 		expect(record.retriesToValid).toBe(0);
 	});
 
@@ -70,7 +70,7 @@ describe("runRecordFrom", () => {
 		expect(retried.retriesToValid).toBe(2);
 	});
 
-	it("marks a failed verification and zeroes usage when the run carried none", () => {
+	it("marks a failed verification and leaves usage unknown when the run carried none", () => {
 		const failed = runRecordFrom({
 			runId: "r",
 			subagentId: "s",
@@ -81,14 +81,10 @@ describe("runRecordFrom", () => {
 			result: { exitCode: 1, warnings: [], verification: { ok: false } },
 		});
 		expect(failed.verifyOutcome).toBe("failed");
-		expect(failed.tokens).toEqual({
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			total: 0,
-		});
-		expect(failed.cost.total).toBe(0);
+		// Unknown, not zero: this run reported no usage, so what it cost
+		// is not known, and a zero would claim it was free.
+		expect(failed.tokens).toBeNull();
+		expect(failed.cost).toBeNull();
 
 		const noVerify = runRecordFrom({
 			runId: "r",

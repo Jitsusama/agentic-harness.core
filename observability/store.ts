@@ -93,6 +93,11 @@ interface RunRow {
 	cost_cache_write: number;
 	cost_total: number;
 	started_at: number;
+	metered: number;
+	session_id: string | null;
+	cwd: string | null;
+	repo: string | null;
+	ended_at: number | null;
 }
 
 /**
@@ -104,8 +109,80 @@ export async function openRunStore(dbPath: string): Promise<RunStore> {
 	const db = await openDb(dbPath);
 	await db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
 	await db.exec(SCHEMA);
+	await migrate(db);
 	return new SqliteRunStore(db);
 }
+
+/**
+ * Bring a store forward to the current shape, in place and without
+ * losing a row.
+ *
+ * This is the only schema path: a new store is created at the original
+ * shape and migrated like any other, so every test that opens a fresh
+ * store also exercises the migration an existing file will meet.
+ * Every step is additive, a column or an index, so nothing a store
+ * already holds can be lost by opening it.
+ */
+async function migrate(db: Db): Promise<void> {
+	const columns = new Set(
+		(await db.all<{ name: string }>("PRAGMA table_info(runs)")).map(
+			(column) => column.name,
+		),
+	);
+
+	if (!columns.has("metered")) {
+		await db.exec(
+			"ALTER TABLE runs ADD COLUMN metered INTEGER NOT NULL DEFAULT 1",
+		);
+		// Rows written before this column existed recorded an unmetered
+		// run as zero cost. Zero tokens identifies them: a run that did
+		// anything consumed some, and all 75 such rows in the real store
+		// had none. Only backfilled on the pass that adds the column, so
+		// a later metered run cannot be reclassified.
+		await db.exec(
+			"UPDATE runs SET metered = 0 WHERE tokens_total = 0 AND cost_total = 0",
+		);
+	}
+
+	for (const [name, type] of ATTRIBUTION_COLUMNS) {
+		if (!columns.has(name)) {
+			await db.exec(`ALTER TABLE runs ADD COLUMN ${name} ${type}`);
+		}
+	}
+
+	const indexes = await db.all<{ name: string }>(
+		"SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'runs_identity'",
+	);
+	if (indexes.length === 0) {
+		// A subagent of a run is one row. A store written before that rule
+		// may hold duplicates, and the index cannot be added over them.
+		// They are captured before anything is removed, keeping the latest
+		// of each pair where it was: nothing is deleted that is not first
+		// copied somewhere it can be recovered from.
+		await db.exec(
+			`CREATE TABLE IF NOT EXISTS runs_superseded AS SELECT * FROM runs WHERE 0;
+			INSERT INTO runs_superseded SELECT * FROM runs WHERE rowid NOT IN (
+				SELECT MAX(rowid) FROM runs GROUP BY run_id, subagent_id
+			);
+			DELETE FROM runs WHERE rowid NOT IN (
+				SELECT MAX(rowid) FROM runs GROUP BY run_id, subagent_id
+			);
+			CREATE UNIQUE INDEX runs_identity ON runs (run_id, subagent_id);`,
+		);
+	}
+}
+
+/**
+ * Where a run belonged, all nullable because a row written before these
+ * existed does not know, and a guess would charge work that did not
+ * incur the cost.
+ */
+const ATTRIBUTION_COLUMNS: ReadonlyArray<readonly [string, string]> = [
+	["session_id", "TEXT"],
+	["cwd", "TEXT"],
+	["repo", "TEXT"],
+	["ended_at", "INTEGER"],
+];
 
 class SqliteRunStore implements RunStore {
 	constructor(private readonly db: Db) {}
@@ -117,8 +194,27 @@ class SqliteRunStore implements RunStore {
 				retries_to_valid, warning_count, exit_code,
 				tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, tokens_total,
 				cost_input, cost_output, cost_cache_read, cost_cache_write, cost_total,
-				started_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				started_at, metered, session_id, cwd, repo, ended_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (run_id, subagent_id) DO UPDATE SET
+				kind = excluded.kind, model = excluded.model,
+				persona = excluded.persona, verify_outcome = excluded.verify_outcome,
+				retries_to_valid = excluded.retries_to_valid,
+				warning_count = excluded.warning_count,
+				exit_code = excluded.exit_code,
+				tokens_input = excluded.tokens_input,
+				tokens_output = excluded.tokens_output,
+				tokens_cache_read = excluded.tokens_cache_read,
+				tokens_cache_write = excluded.tokens_cache_write,
+				tokens_total = excluded.tokens_total,
+				cost_input = excluded.cost_input,
+				cost_output = excluded.cost_output,
+				cost_cache_read = excluded.cost_cache_read,
+				cost_cache_write = excluded.cost_cache_write,
+				cost_total = excluded.cost_total,
+				started_at = excluded.started_at, metered = excluded.metered,
+				session_id = excluded.session_id, cwd = excluded.cwd,
+				repo = excluded.repo, ended_at = excluded.ended_at`,
 			[
 				record.runId,
 				record.subagentId,
@@ -129,17 +225,25 @@ class SqliteRunStore implements RunStore {
 				record.retriesToValid,
 				record.warningCount,
 				record.exitCode,
-				record.tokens.input,
-				record.tokens.output,
-				record.tokens.cacheRead,
-				record.tokens.cacheWrite,
-				record.tokens.total,
-				record.cost.input,
-				record.cost.output,
-				record.cost.cacheRead,
-				record.cost.cacheWrite,
-				record.cost.total,
+				// An unmetered run stores zeros, which leave every sum exactly
+				// as excluding it would, and the flag beside them is what says
+				// the zeros are unknown rather than free.
+				record.tokens?.input ?? 0,
+				record.tokens?.output ?? 0,
+				record.tokens?.cacheRead ?? 0,
+				record.tokens?.cacheWrite ?? 0,
+				record.tokens?.total ?? 0,
+				record.cost?.input ?? 0,
+				record.cost?.output ?? 0,
+				record.cost?.cacheRead ?? 0,
+				record.cost?.cacheWrite ?? 0,
+				record.cost?.total ?? 0,
 				record.startedAt,
+				record.cost ? 1 : 0,
+				record.sessionId ?? null,
+				record.cwd ?? null,
+				record.repo ?? null,
+				record.endedAt ?? null,
 			],
 		);
 	}
@@ -162,6 +266,7 @@ class SqliteRunStore implements RunStore {
 				SUM(CASE WHEN verify_outcome = 'failed' THEN 1 ELSE 0 END) AS failed,
 				SUM(retries_to_valid) AS total_retries,
 				SUM(warning_count) AS total_warnings,
+				SUM(CASE WHEN metered = 0 THEN 1 ELSE 0 END) AS unmetered,
 				SUM(tokens_input) AS tokens_input,
 				SUM(tokens_output) AS tokens_output,
 				SUM(tokens_cache_read) AS tokens_cache_read,
@@ -185,6 +290,7 @@ class SqliteRunStore implements RunStore {
 			failed: row.failed,
 			totalRetries: row.total_retries,
 			totalWarnings: row.total_warnings,
+			unmetered: row.unmetered,
 			tokens: {
 				input: row.tokens_input,
 				output: row.tokens_output,
@@ -273,6 +379,7 @@ interface SummaryRow {
 	failed: number;
 	total_retries: number;
 	total_warnings: number;
+	unmetered: number;
 	tokens_input: number;
 	tokens_output: number;
 	tokens_cache_read: number;
@@ -296,20 +403,30 @@ function rowToRecord(row: RunRow): RunRecord {
 		retriesToValid: row.retries_to_valid,
 		warningCount: row.warning_count,
 		exitCode: row.exit_code,
-		tokens: {
-			input: row.tokens_input,
-			output: row.tokens_output,
-			cacheRead: row.tokens_cache_read,
-			cacheWrite: row.tokens_cache_write,
-			total: row.tokens_total,
-		},
-		cost: {
-			input: row.cost_input,
-			output: row.cost_output,
-			cacheRead: row.cost_cache_read,
-			cacheWrite: row.cost_cache_write,
-			total: row.cost_total,
-		},
+		tokens:
+			row.metered === 0
+				? null
+				: {
+						input: row.tokens_input,
+						output: row.tokens_output,
+						cacheRead: row.tokens_cache_read,
+						cacheWrite: row.tokens_cache_write,
+						total: row.tokens_total,
+					},
+		cost:
+			row.metered === 0
+				? null
+				: {
+						input: row.cost_input,
+						output: row.cost_output,
+						cacheRead: row.cost_cache_read,
+						cacheWrite: row.cost_cache_write,
+						total: row.cost_total,
+					},
 		startedAt: row.started_at,
+		sessionId: row.session_id ?? null,
+		cwd: row.cwd ?? null,
+		repo: row.repo ?? null,
+		endedAt: row.ended_at ?? null,
 	};
 }

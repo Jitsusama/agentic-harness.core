@@ -27,6 +27,10 @@ function sampleRun(overrides: Partial<RunRecord> = {}): RunRecord {
 			total: 0.33,
 		},
 		startedAt: 1_700_000_000_000,
+		sessionId: "019fe2c6-b46e",
+		cwd: "/Users/j/src/github.com/Shopify/world",
+		repo: "github.com/Shopify/world",
+		endedAt: 1_700_000_060_000,
 		...overrides,
 	};
 }

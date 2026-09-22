@@ -46,12 +46,34 @@ export interface RunRecord {
 	readonly warningCount: number;
 	/** Process exit code. */
 	readonly exitCode: number;
-	/** Token counts summed across the run's turns. */
-	readonly tokens: RunTokens;
-	/** Cost summed across the run's turns. */
-	readonly cost: RunCost;
+	/**
+	 * Token counts summed across the run's turns, or null when the run
+	 * reported no usage at all.
+	 */
+	readonly tokens: RunTokens | null;
+	/**
+	 * Cost summed across the run's turns, or null when the run reported
+	 * no usage. Null is not zero: a run that died before it could report
+	 * cost an unknown amount, and recording it as free makes it
+	 * indistinguishable from one that genuinely cost nothing. Every one
+	 * of the 75 zero-cost rows found in the real store had zero tokens
+	 * too, so not one of them was actually free.
+	 */
+	readonly cost: RunCost | null;
 	/** When the run started, epoch milliseconds. */
 	readonly startedAt: number;
+	/**
+	 * The parent session that dispatched the run, the directory it was
+	 * working in and the repo that directory belongs to. Stamped by the
+	 * sink rather than the producer, since the sink is what knows where
+	 * it is. Null when not known, never guessed: without these, $12,825
+	 * of fan-out could not be traced to the work that caused it.
+	 */
+	readonly sessionId?: string | null;
+	readonly cwd?: string | null;
+	readonly repo?: string | null;
+	/** When the run's record was written, epoch milliseconds. */
+	readonly endedAt?: number | null;
 }
 
 /** Aggregate view of one run across its subagents. */
@@ -62,6 +84,12 @@ export interface RunSummary {
 	readonly failed: number;
 	readonly totalRetries: number;
 	readonly totalWarnings: number;
+	/**
+	 * Subagents that reported no usage. The totals beside this exclude
+	 * them, so a total can say what it is missing rather than silently
+	 * pricing the unknown at nothing.
+	 */
+	readonly unmetered: number;
 	readonly tokens: RunTokens;
 	readonly cost: RunCost;
 	/** cacheRead / (input + cacheRead); 0 when the denominator is 0. */

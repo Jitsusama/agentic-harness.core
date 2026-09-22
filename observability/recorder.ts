@@ -29,27 +29,18 @@ export interface RunRecordInput {
 	};
 }
 
-const ZERO_TOKENS: RunTokens = {
-	input: 0,
-	output: 0,
-	cacheRead: 0,
-	cacheWrite: 0,
-	total: 0,
-};
-
-const ZERO_COST: RunCost = {
-	input: 0,
-	output: 0,
-	cacheRead: 0,
-	cacheWrite: 0,
-	total: 0,
-};
-
 /**
  * Build a {@link RunRecord} from a producer's per-subagent
  * result. Verify outcome derives from the verification
- * block when present, and usage falls back to zeros for a
- * run that reported none (older pi, a crashed child).
+ * block when present.
+ *
+ * A run that reported no usage (a crashed child, a round
+ * killed before billing, an older pi) still produces a record,
+ * because withholding the row would make the worst failures
+ * the ones the table has nothing to say about. But its tokens
+ * and cost are null rather than zero. The row is the claim
+ * that the run happened; a zero would be a second claim, that
+ * it was free, which nothing supports.
  */
 export function runRecordFrom(input: RunRecordInput): RunRecord {
 	const { result } = input;
@@ -71,8 +62,8 @@ export function runRecordFrom(input: RunRecordInput): RunRecord {
 		retriesToValid: Math.max(0, (result.verification?.attempts ?? 1) - 1),
 		warningCount: result.warnings.length,
 		exitCode: result.exitCode,
-		tokens: result.usage?.tokens ?? ZERO_TOKENS,
-		cost: result.usage?.cost ?? ZERO_COST,
+		tokens: result.usage?.tokens ?? null,
+		cost: result.usage?.cost ?? null,
 		startedAt: input.startedAt,
 	};
 }
