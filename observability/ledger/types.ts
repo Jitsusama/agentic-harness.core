@@ -68,6 +68,37 @@ export interface ToolCallRecord {
 }
 
 /**
+ * A tool call a compaction dropped from context, and where it happened.
+ *
+ * Recorded at the compaction rather than guessed at later, because the
+ * boundary a compaction drew is known precisely then and only then: the
+ * entry it names as first kept is a fact about that one event, not
+ * something a later query could reconstruct from the calls alone.
+ */
+export interface DroppedCallRecord {
+	/** The call that was dropped, addressing the same row in tool_calls. */
+	readonly callDigest: string;
+	readonly sessionId: string;
+	/** The compaction entry that dropped it. */
+	readonly droppedAtEntryId: string;
+	readonly droppedAtTimestamp: string;
+}
+
+/**
+ * A dropped call that was asked again afterward: the earlier answer was
+ * discarded and the same question was put a second time. No claim about
+ * whether the second asking was necessary, only that it happened.
+ */
+export interface Regret {
+	readonly name: string;
+	readonly argsDigest: string;
+	readonly sessionId: string;
+	readonly droppedAtTimestamp: string;
+	readonly reAskedAtTimestamp: string;
+	readonly resultChars: number | null;
+}
+
+/**
  * Arguments asked more than once inside one session, and what the
  * repeats weighed.
  */

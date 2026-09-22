@@ -19,9 +19,11 @@
 export {
 	type CostDimension,
 	type CostSlice,
+	type DroppedCallRecord,
 	type LedgerTotal,
 	openTurnStore,
 	type RecordOutcome,
+	type Regret,
 	type RepeatedCall,
 	type SessionRecord,
 	type ToolCallRecord,

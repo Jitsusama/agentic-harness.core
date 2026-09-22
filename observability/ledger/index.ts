@@ -20,6 +20,8 @@ export {
 	type TurnStore,
 } from "./store.js";
 export type {
+	DroppedCallRecord,
+	Regret,
 	RepeatedCall,
 	SessionRecord,
 	ToolCallRecord,
