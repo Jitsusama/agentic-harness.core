@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { RunCost, RunTokens } from "../types.js";
+import { SessionCollector } from "./session.js";
 import type { LedgerScan, TurnKind, TurnRecord } from "./types.js";
 
 /** Width of a stored content address. 96 bits is ample for a corpus of
@@ -30,6 +31,7 @@ export function readTurns(
 	lines: Iterable<string>,
 ): LedgerScan {
 	const turns: TurnRecord[] = [];
+	const session = new SessionCollector(sessionId);
 	let count = 0;
 	let parsed = 0;
 	let unparseable = 0;
@@ -56,8 +58,15 @@ export function readTurns(
 		}
 		parsed += 1;
 
+		if (entry.customType === "quest-workflow") {
+			const data = asRecord(entry.data);
+			if (data) session.observeWorkflow(data);
+			continue;
+		}
+
 		const turn = turnFrom(sessionId, entry);
 		if (!turn) continue;
+		session.observeTurn(turn.timestamp);
 		turns.push(turn);
 		if (turn.cost) billable += 1;
 		else unmetered += 1;
@@ -66,6 +75,7 @@ export function readTurns(
 	return {
 		turns,
 		coverage: { lines: count, parsed, unparseable, billable, unmetered },
+		session: session.record(),
 	};
 }
 

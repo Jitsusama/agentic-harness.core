@@ -53,8 +53,30 @@ export interface ScanCoverage {
 	readonly unmetered: number;
 }
 
+/**
+ * What a session log says about itself.
+ *
+ * Every field but the id may be absent, and absent is kept rather than
+ * guessed: attributing spend to a repo or a quest the log never named
+ * would charge work that did not incur it.
+ */
+export interface SessionRecord {
+	readonly sessionId: string;
+	/** The working directory the log named, if it named one. */
+	readonly cwd: string | null;
+	/** The repo that directory belongs to, derived from it. */
+	readonly repo: string | null;
+	/** The quest the session was working under, if any. */
+	readonly quest: string | null;
+	/** Timestamp of the earliest billed turn. */
+	readonly firstSeen: string | null;
+	/** Timestamp of the latest billed turn. */
+	readonly lastSeen: string | null;
+}
+
 /** The turns one session log yielded, and what reading it missed. */
 export interface LedgerScan {
 	readonly turns: TurnRecord[];
 	readonly coverage: ScanCoverage;
+	readonly session: SessionRecord;
 }

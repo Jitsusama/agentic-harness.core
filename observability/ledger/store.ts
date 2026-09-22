@@ -1,5 +1,5 @@
 import { type Db, openDb } from "../../internal/sqlite/db.js";
-import type { TurnRecord } from "./types.js";
+import type { SessionRecord, TurnRecord } from "./types.js";
 
 /** What a dimension's slice of spend came to. */
 export interface CostSlice {
@@ -26,11 +26,18 @@ export interface RecordOutcome {
 }
 
 /** What a total or a slice may be narrowed to. */
-export type CostDimension = "model" | "session" | "kind" | "day";
+export type CostDimension =
+	| "model"
+	| "session"
+	| "kind"
+	| "day"
+	| "repo"
+	| "quest";
 
 /** A content-addressed store of billable turns. */
 export interface TurnStore {
 	recordTurns(turns: readonly TurnRecord[]): Promise<RecordOutcome>;
+	recordSession(session: SessionRecord): Promise<void>;
 	total(): Promise<LedgerTotal>;
 	costBy(dimension: CostDimension): Promise<CostSlice[]>;
 	close(): Promise<void>;
@@ -72,16 +79,30 @@ CREATE TABLE IF NOT EXISTS sightings (
 	session_id TEXT NOT NULL,
 	PRIMARY KEY (digest, session_id)
 );
+CREATE TABLE IF NOT EXISTS sessions (
+	session_id TEXT PRIMARY KEY,
+	cwd TEXT,
+	repo TEXT,
+	quest TEXT,
+	first_seen TEXT,
+	last_seen TEXT
+);
 `;
 
 /** Bound variables per probe, well inside SQLite's default ceiling. */
 const PROBE_CHUNK = 500;
 
 const GROUP_BY: Record<CostDimension, string> = {
-	model: "model",
-	session: "session_id",
-	kind: "kind",
-	day: "substr(timestamp, 1, 10)",
+	model: "turns.model",
+	session: "turns.session_id",
+	kind: "turns.kind",
+	day: "substr(turns.timestamp, 1, 10)",
+	// A left join, and coalesced to the empty string, so spend whose
+	// session named no repo or quest stays a visible slice. An inner join
+	// would drop it, and every share would then be a fraction of a total
+	// that quietly excluded most of the money.
+	repo: "COALESCE(sessions.repo, '')",
+	quest: "COALESCE(sessions.quest, '')",
 };
 
 /**
@@ -196,6 +217,33 @@ class SqliteTurnStore implements TurnStore {
 		};
 	}
 
+	/**
+	 * Replace what is known about a session. The row is a current fact
+	 * rather than an append-only history: a re-index of a log that moved
+	 * quest should report where it ended up.
+	 */
+	async recordSession(session: SessionRecord): Promise<void> {
+		await this.db.run(
+			`INSERT INTO sessions (
+				session_id, cwd, repo, quest, first_seen, last_seen
+			) VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(session_id) DO UPDATE SET
+				cwd = excluded.cwd,
+				repo = excluded.repo,
+				quest = excluded.quest,
+				first_seen = MIN(first_seen, excluded.first_seen),
+				last_seen = MAX(last_seen, excluded.last_seen)`,
+			[
+				session.sessionId,
+				session.cwd,
+				session.repo,
+				session.quest,
+				session.firstSeen,
+				session.lastSeen,
+			],
+		);
+	}
+
 	async costBy(dimension: CostDimension): Promise<CostSlice[]> {
 		const column = GROUP_BY[dimension];
 		const rows = await this.db.all<{
@@ -204,7 +252,9 @@ class SqliteTurnStore implements TurnStore {
 			turns: number;
 		}>(
 			`SELECT ${column} AS key, SUM(cost_total) AS cost, COUNT(*) AS turns
-			FROM turns GROUP BY ${column} ORDER BY cost DESC`,
+			FROM turns
+			LEFT JOIN sessions ON sessions.session_id = turns.session_id
+			GROUP BY ${column} ORDER BY cost DESC`,
 		);
 		return rows.map((r) => ({
 			key: r.key,

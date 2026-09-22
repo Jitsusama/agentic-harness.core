@@ -7,6 +7,7 @@
  */
 
 export { readTurns } from "./scan.js";
+export { repoOf } from "./session.js";
 export {
 	type CostDimension,
 	type CostSlice,
@@ -18,6 +19,7 @@ export {
 export type {
 	LedgerScan,
 	ScanCoverage,
+	SessionRecord,
 	TurnKind,
 	TurnRecord,
 } from "./types.js";
