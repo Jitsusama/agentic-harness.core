@@ -57,6 +57,15 @@ export interface ToolCallRecord {
 	readonly name: string;
 	/** Digest of the arguments, never the arguments. */
 	readonly argsDigest: string;
+	/**
+	 * What kind of verifier this call ran, if it ran one at all. Classified
+	 * from the command text at scan time, before that text is digested
+	 * away, so this is the one place any of it survives, and only as a
+	 * category. A chained gate running more than one kind is `verify`
+	 * rather than a pick of one, since one exit code cannot support the
+	 * precision of naming a single kind.
+	 */
+	readonly verifierKind: VerifierKind | null;
 	/** The file the call declared, when it declared one. */
 	readonly path: string | null;
 	/** Characters the result came back with, or null if it never came. */
@@ -65,6 +74,22 @@ export interface ToolCallRecord {
 	readonly resultDigest: string | null;
 	/** Whether the result came back an error. Null when it never came. */
 	readonly isError: boolean | null;
+}
+
+/**
+ * What kind of verifier a call ran. `verify` names a chained gate that
+ * ran more than one kind under a single exit code, which is a category
+ * of its own rather than a guess at which one kind mattered.
+ */
+export type VerifierKind = "test" | "build" | "typecheck" | "lint" | "verify";
+
+/** How a kind of verifier fared across every call classified as it. */
+export interface VerifierOutcome {
+	readonly kind: VerifierKind;
+	readonly passed: number;
+	readonly failed: number;
+	/** Calls whose result never arrived, so pass or fail is unknown. */
+	readonly unknown: number;
 }
 
 /**

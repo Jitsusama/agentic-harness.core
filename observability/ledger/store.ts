@@ -6,6 +6,7 @@ import type {
 	SessionRecord,
 	ToolCallRecord,
 	TurnRecord,
+	VerifierOutcome,
 } from "./types.js";
 
 /** What a dimension's slice of spend came to. */
@@ -53,6 +54,8 @@ export interface TurnStore {
 	queryDropped(): Promise<DroppedCallRecord[]>;
 	/** Dropped calls asked again after the drop, earliest re-ask first. */
 	regret(): Promise<Regret[]>;
+	/** Pass, fail and unknown counts per verifier kind that ran at all. */
+	verifierOutcomes(): Promise<VerifierOutcome[]>;
 	total(): Promise<LedgerTotal>;
 	costBy(dimension: CostDimension): Promise<CostSlice[]>;
 	close(): Promise<void>;
@@ -105,8 +108,10 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 	path TEXT,
 	result_chars INTEGER,
 	result_digest TEXT,
-	is_error INTEGER
+	is_error INTEGER,
+	verifier_kind TEXT
 );
+CREATE INDEX IF NOT EXISTS tool_calls_verifier ON tool_calls (verifier_kind);
 CREATE INDEX IF NOT EXISTS tool_calls_args ON tool_calls (session_id, args_digest);
 CREATE INDEX IF NOT EXISTS tool_calls_path ON tool_calls (path);
 CREATE TABLE IF NOT EXISTS dropped_calls (
@@ -272,8 +277,9 @@ class SqliteTurnStore implements TurnStore {
 				await this.db.run(
 					`INSERT INTO tool_calls (
 						digest, session_id, entry_id, call_id, timestamp, name,
-						args_digest, path, result_chars, result_digest, is_error
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						args_digest, path, result_chars, result_digest, is_error,
+						verifier_kind
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 					[
 						c.digest,
 						c.sessionId,
@@ -288,6 +294,7 @@ class SqliteTurnStore implements TurnStore {
 						// Null is not false: a call whose result never arrived
 						// did not come back succeeding.
 						c.isError === null ? null : c.isError ? 1 : 0,
+						c.verifierKind,
 					],
 				);
 			}
@@ -315,6 +322,36 @@ class SqliteTurnStore implements TurnStore {
 			resultChars: row.result_chars,
 			resultDigest: row.result_digest,
 			isError: row.is_error === null ? null : row.is_error === 1,
+			verifierKind: row.verifier_kind as ToolCallRecord["verifierKind"],
+		}));
+	}
+
+	/**
+	 * Pass, fail and unknown counts per verifier kind that ran at all. A
+	 * kind nothing ever ran is left out rather than reported as zero,
+	 * since zero-and-never-ran read the same on a dashboard but mean
+	 * opposite things.
+	 */
+	async verifierOutcomes(): Promise<VerifierOutcome[]> {
+		const rows = await this.db.all<{
+			verifier_kind: string;
+			passed: number;
+			failed: number;
+			unknown: number;
+		}>(
+			`SELECT verifier_kind,
+				SUM(CASE WHEN is_error = 0 THEN 1 ELSE 0 END) AS passed,
+				SUM(CASE WHEN is_error = 1 THEN 1 ELSE 0 END) AS failed,
+				SUM(CASE WHEN is_error IS NULL THEN 1 ELSE 0 END) AS unknown
+			FROM tool_calls
+			WHERE verifier_kind IS NOT NULL
+			GROUP BY verifier_kind`,
+		);
+		return rows.map((row) => ({
+			kind: row.verifier_kind as VerifierOutcome["kind"],
+			passed: row.passed,
+			failed: row.failed,
+			unknown: row.unknown,
 		}));
 	}
 
@@ -535,4 +572,5 @@ interface CallRow {
 	result_chars: number | null;
 	result_digest: string | null;
 	is_error: number | null;
+	verifier_kind: string | null;
 }

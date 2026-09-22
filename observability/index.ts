@@ -30,6 +30,8 @@ export {
 	type TurnKind,
 	type TurnRecord,
 	type TurnStore,
+	type VerifierKind,
+	type VerifierOutcome,
 } from "./ledger/index.js";
 
 export {

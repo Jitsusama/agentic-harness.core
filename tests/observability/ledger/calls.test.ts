@@ -17,6 +17,7 @@ function call(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
 		resultChars: 100,
 		resultDigest: "res-1",
 		isError: false,
+		verifierKind: null,
 		...overrides,
 	};
 }

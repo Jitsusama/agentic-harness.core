@@ -27,4 +27,6 @@ export type {
 	ToolCallRecord,
 	TurnKind,
 	TurnRecord,
+	VerifierKind,
+	VerifierOutcome,
 } from "./types.js";
