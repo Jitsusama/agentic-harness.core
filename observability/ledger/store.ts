@@ -1,6 +1,7 @@
 import { type Db, openDb } from "../../internal/sqlite/db.js";
 import type {
 	DroppedCallRecord,
+	PaybackReplay,
 	Regret,
 	RepeatedCall,
 	SessionRecord,
@@ -56,6 +57,8 @@ export interface TurnStore {
 	regret(): Promise<Regret[]>;
 	/** Pass, fail and unknown counts per verifier kind that ran at all. */
 	verifierOutcomes(): Promise<VerifierOutcome[]>;
+	/** How real compactions compare against the payback test. */
+	paybackReplay(): Promise<PaybackReplay>;
 	total(): Promise<LedgerTotal>;
 	costBy(dimension: CostDimension): Promise<CostSlice[]>;
 	close(): Promise<void>;
@@ -472,6 +475,91 @@ class SqliteTurnStore implements TurnStore {
 			reAskedAtTimestamp: row.re_asked_at_timestamp,
 			resultChars: row.result_chars,
 		}));
+	}
+
+	/**
+	 * Replay the payback test over compactions already in the ledger.
+	 *
+	 * Retained tokens come from the first turn after each compaction
+	 * (its resident input, cache read and cache write together), and
+	 * remaining turns from how many turns actually followed. A model's
+	 * rate is derived from its own billed dollars per token elsewhere in
+	 * the ledger, never a hardcoded price table, since a price table
+	 * goes stale the moment a provider changes its prices and this does
+	 * not.
+	 */
+	async paybackReplay(): Promise<PaybackReplay> {
+		const rows = await this.db.all<{
+			dropped_before: number;
+			remaining: number | null;
+			retained: number | null;
+			read_rate: number | null;
+			write_rate: number | null;
+		}>(
+			`WITH rates AS (
+				SELECT model,
+					SUM(cost_cache_read) * 1.0 / SUM(tokens_cache_read) AS read_rate,
+					SUM(cost_cache_write) * 1.0 / SUM(tokens_cache_write) AS write_rate
+				FROM turns
+				WHERE kind = 'assistant'
+					AND tokens_cache_read > 0 AND tokens_cache_write > 0
+				GROUP BY model
+			),
+			compactions AS (
+				SELECT digest, session_id, timestamp, dropped_before, model
+				FROM turns
+				WHERE kind = 'compaction' AND dropped_before IS NOT NULL
+			),
+			after_turns AS (
+				SELECT c.digest AS compaction_digest,
+					t.tokens_input + t.tokens_cache_read + t.tokens_cache_write
+						AS resident,
+					ROW_NUMBER() OVER (
+						PARTITION BY c.digest ORDER BY t.timestamp ASC
+					) AS rn
+				FROM compactions c
+				JOIN turns t
+					ON t.session_id = c.session_id AND t.timestamp > c.timestamp
+			),
+			after_agg AS (
+				SELECT compaction_digest,
+					COUNT(*) AS remaining,
+					MAX(CASE WHEN rn = 1 THEN resident END) AS retained
+				FROM after_turns
+				GROUP BY compaction_digest
+			)
+			SELECT c.dropped_before AS dropped_before,
+				a.remaining AS remaining,
+				a.retained AS retained,
+				r.read_rate AS read_rate,
+				r.write_rate AS write_rate
+			FROM compactions c
+			LEFT JOIN after_agg a ON a.compaction_digest = c.digest
+			LEFT JOIN rates r ON r.model = c.model`,
+		);
+
+		let evaluable = 0;
+		let agreed = 0;
+		let disagreed = 0;
+		for (const row of rows) {
+			if (
+				row.remaining === null ||
+				row.retained === null ||
+				row.read_rate === null ||
+				row.write_rate === null ||
+				row.read_rate <= 0
+			) {
+				continue;
+			}
+			evaluable += 1;
+			const dropped = Math.max(0, row.dropped_before - row.retained);
+			const saved = dropped * row.remaining;
+			const ratio = row.write_rate / row.read_rate;
+			const cost = ratio * row.retained;
+			if (saved > cost) agreed += 1;
+			else disagreed += 1;
+		}
+		return { compactions: rows.length, evaluable, agreed, disagreed };
 	}
 
 	async recordSession(session: SessionRecord): Promise<void> {

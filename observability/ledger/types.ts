@@ -93,6 +93,21 @@ export interface VerifierOutcome {
 }
 
 /**
+ * How real compactions compare against the payback test, replayed over
+ * turns already in the ledger rather than watched live. `evaluable`
+ * excludes a compaction with no turn after it (nothing to measure
+ * retention from) or whose model has no derivable rate yet.
+ */
+export interface PaybackReplay {
+	readonly compactions: number;
+	readonly evaluable: number;
+	/** The test would also have fired. */
+	readonly agreed: number;
+	/** The test would have declined what actually happened. */
+	readonly disagreed: number;
+}
+
+/**
  * A tool call a compaction dropped from context, and where it happened.
  *
  * Recorded at the compaction rather than guessed at later, because the

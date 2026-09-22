@@ -21,6 +21,7 @@ export {
 } from "./store.js";
 export type {
 	DroppedCallRecord,
+	PaybackReplay,
 	Regret,
 	RepeatedCall,
 	SessionRecord,

@@ -22,6 +22,7 @@ export {
 	type DroppedCallRecord,
 	type LedgerTotal,
 	openTurnStore,
+	type PaybackReplay,
 	type RecordOutcome,
 	type Regret,
 	type RepeatedCall,
