@@ -37,6 +37,52 @@ export interface TurnRecord {
 }
 
 /**
+ * One tool call, addressed by what it asked rather than what it got
+ * back, with no bytes of either kept.
+ *
+ * The digests are what make repetition visible: a call whose arguments
+ * digest to something already asked in the same session asked a
+ * question that session's context could already answer. That is waste
+ * with no value judgement in it, which is what makes it safe to act on.
+ */
+export interface ToolCallRecord {
+	/** Content address of the call, stable across a forked log. */
+	readonly digest: string;
+	readonly sessionId: string;
+	/** The assistant entry that made the call. */
+	readonly entryId: string;
+	/** The call's own id, which its result names. */
+	readonly callId: string;
+	readonly timestamp: string;
+	readonly name: string;
+	/** Digest of the arguments, never the arguments. */
+	readonly argsDigest: string;
+	/** The file the call declared, when it declared one. */
+	readonly path: string | null;
+	/** Characters the result came back with, or null if it never came. */
+	readonly resultChars: number | null;
+	/** Digest of the result text, or null if it never came. */
+	readonly resultDigest: string | null;
+	/** Whether the result came back an error. Null when it never came. */
+	readonly isError: boolean | null;
+}
+
+/**
+ * Arguments asked more than once inside one session, and what the
+ * repeats weighed.
+ */
+export interface RepeatedCall {
+	readonly argsDigest: string;
+	readonly name: string;
+	/** How many times these arguments were asked. */
+	readonly asked: number;
+	/** How many of those were repeats, so one less than asked. */
+	readonly repeated: number;
+	/** Characters the repeats re-admitted to the context. */
+	readonly repeatedChars: number;
+}
+
+/**
  * What a session log says about itself.
  *
  * Every field but the id may be absent, and absent is kept rather than

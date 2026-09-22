@@ -1,5 +1,10 @@
 import { type Db, openDb } from "../../internal/sqlite/db.js";
-import type { SessionRecord, TurnRecord } from "./types.js";
+import type {
+	RepeatedCall,
+	SessionRecord,
+	ToolCallRecord,
+	TurnRecord,
+} from "./types.js";
 
 /** What a dimension's slice of spend came to. */
 export interface CostSlice {
@@ -38,6 +43,10 @@ export type CostDimension =
 export interface TurnStore {
 	recordTurns(turns: readonly TurnRecord[]): Promise<RecordOutcome>;
 	recordSession(session: SessionRecord): Promise<void>;
+	recordCalls(calls: readonly ToolCallRecord[]): Promise<RecordOutcome>;
+	queryCalls(): Promise<ToolCallRecord[]>;
+	/** Arguments asked more than once in one session, heaviest first. */
+	repeatedCalls(): Promise<RepeatedCall[]>;
 	total(): Promise<LedgerTotal>;
 	costBy(dimension: CostDimension): Promise<CostSlice[]>;
 	close(): Promise<void>;
@@ -79,6 +88,21 @@ CREATE TABLE IF NOT EXISTS sightings (
 	session_id TEXT NOT NULL,
 	PRIMARY KEY (digest, session_id)
 );
+CREATE TABLE IF NOT EXISTS tool_calls (
+	digest TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL,
+	entry_id TEXT NOT NULL,
+	call_id TEXT NOT NULL,
+	timestamp TEXT NOT NULL,
+	name TEXT NOT NULL,
+	args_digest TEXT NOT NULL,
+	path TEXT,
+	result_chars INTEGER,
+	result_digest TEXT,
+	is_error INTEGER
+);
+CREATE INDEX IF NOT EXISTS tool_calls_args ON tool_calls (session_id, args_digest);
+CREATE INDEX IF NOT EXISTS tool_calls_path ON tool_calls (path);
 CREATE TABLE IF NOT EXISTS sessions (
 	session_id TEXT PRIMARY KEY,
 	cwd TEXT,
@@ -222,6 +246,98 @@ class SqliteTurnStore implements TurnStore {
 	 * rather than an append-only history: a re-index of a log that moved
 	 * quest should report where it ended up.
 	 */
+	async recordCalls(calls: readonly ToolCallRecord[]): Promise<RecordOutcome> {
+		const fresh = new Map<string, ToolCallRecord>();
+		for (const c of calls) if (!fresh.has(c.digest)) fresh.set(c.digest, c);
+		const known = await this.knownCalls([...fresh.keys()]);
+
+		await this.db.exec("BEGIN");
+		try {
+			let inserted = 0;
+			for (const c of fresh.values()) {
+				if (known.has(c.digest)) continue;
+				inserted += 1;
+				await this.db.run(
+					`INSERT INTO tool_calls (
+						digest, session_id, entry_id, call_id, timestamp, name,
+						args_digest, path, result_chars, result_digest, is_error
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						c.digest,
+						c.sessionId,
+						c.entryId,
+						c.callId,
+						c.timestamp,
+						c.name,
+						c.argsDigest,
+						c.path,
+						c.resultChars,
+						c.resultDigest,
+						// Null is not false: a call whose result never arrived
+						// did not come back succeeding.
+						c.isError === null ? null : c.isError ? 1 : 0,
+					],
+				);
+			}
+			await this.db.exec("COMMIT");
+			return { inserted, duplicates: calls.length - inserted };
+		} catch (error) {
+			await this.db.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	async queryCalls(): Promise<ToolCallRecord[]> {
+		const rows = await this.db.all<CallRow>(
+			"SELECT * FROM tool_calls ORDER BY timestamp ASC",
+		);
+		return rows.map((row) => ({
+			digest: row.digest,
+			sessionId: row.session_id,
+			entryId: row.entry_id,
+			callId: row.call_id,
+			timestamp: row.timestamp,
+			name: row.name,
+			argsDigest: row.args_digest,
+			path: row.path,
+			resultChars: row.result_chars,
+			resultDigest: row.result_digest,
+			isError: row.is_error === null ? null : row.is_error === 1,
+		}));
+	}
+
+	/**
+	 * Arguments asked more than once inside one session.
+	 *
+	 * Grouped by session as well as by arguments, because a second
+	 * session has none of the first one's context: asking again is the
+	 * only way it could know. Only repetition within a session is a
+	 * question whose answer was already there.
+	 */
+	async repeatedCalls(): Promise<RepeatedCall[]> {
+		const rows = await this.db.all<{
+			args_digest: string;
+			name: string;
+			asked: number;
+			repeated_chars: number | null;
+		}>(
+			`SELECT args_digest, name, COUNT(*) AS asked,
+				SUM(COALESCE(result_chars, 0))
+					- MAX(COALESCE(result_chars, 0)) AS repeated_chars
+			FROM tool_calls
+			GROUP BY session_id, args_digest
+			HAVING asked > 1
+			ORDER BY repeated_chars DESC`,
+		);
+		return rows.map((row) => ({
+			argsDigest: row.args_digest,
+			name: row.name,
+			asked: row.asked,
+			repeated: row.asked - 1,
+			repeatedChars: row.repeated_chars ?? 0,
+		}));
+	}
+
 	async recordSession(session: SessionRecord): Promise<void> {
 		await this.db.run(
 			`INSERT INTO sessions (
@@ -274,18 +390,50 @@ class SqliteTurnStore implements TurnStore {
 		);
 	}
 
+	/** Which of these call addresses the table already holds. */
+	private async knownCalls(digests: readonly string[]): Promise<Set<string>> {
+		return this.alreadyHeld("tool_calls", digests);
+	}
+
 	/** Which of these addresses the table already holds. */
 	private async known(digests: readonly string[]): Promise<Set<string>> {
+		return this.alreadyHeld("turns", digests);
+	}
+
+	/**
+	 * Which of these digests a table already holds, probed in chunks so a
+	 * corpus-sized batch stays inside SQLite's bound-variable ceiling.
+	 */
+	private async alreadyHeld(
+		table: "turns" | "tool_calls",
+		digests: readonly string[],
+	): Promise<Set<string>> {
 		const found = new Set<string>();
 		for (let i = 0; i < digests.length; i += PROBE_CHUNK) {
 			const chunk = digests.slice(i, i + PROBE_CHUNK);
 			const holes = chunk.map(() => "?").join(",");
+			// The table name is a literal from a two-member union, not
+			// caller input, so it cannot carry anything but itself.
 			const rows = await this.db.all<{ digest: string }>(
-				`SELECT digest FROM turns WHERE digest IN (${holes})`,
+				`SELECT digest FROM ${table} WHERE digest IN (${holes})`,
 				chunk,
 			);
 			for (const r of rows) found.add(r.digest);
 		}
 		return found;
 	}
+}
+
+interface CallRow {
+	digest: string;
+	session_id: string;
+	entry_id: string;
+	call_id: string;
+	timestamp: string;
+	name: string;
+	args_digest: string;
+	path: string | null;
+	result_chars: number | null;
+	result_digest: string | null;
+	is_error: number | null;
 }

@@ -19,4 +19,10 @@ export {
 	type RecordOutcome,
 	type TurnStore,
 } from "./store.js";
-export type { SessionRecord, TurnKind, TurnRecord } from "./types.js";
+export type {
+	RepeatedCall,
+	SessionRecord,
+	ToolCallRecord,
+	TurnKind,
+	TurnRecord,
+} from "./types.js";
