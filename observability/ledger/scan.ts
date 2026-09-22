@@ -58,6 +58,11 @@ export function readTurns(
 		}
 		parsed += 1;
 
+		if (entry.type === "session") {
+			session.observeHeader(entry);
+			continue;
+		}
+
 		if (entry.customType === "quest-workflow") {
 			const data = asRecord(entry.data);
 			if (data) session.observeWorkflow(data);

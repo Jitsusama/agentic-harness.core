@@ -53,6 +53,15 @@ export class SessionCollector {
 	constructor(private readonly sessionId: string) {}
 
 	/**
+	 * Take the working directory from a session's header entry. Every log
+	 * opens with one, which is what makes attribution complete rather than
+	 * limited to the quarter of sessions that also name a quest.
+	 */
+	observeHeader(entry: Record<string, unknown>): void {
+		if (typeof entry.cwd === "string") this.cwd = entry.cwd;
+	}
+
+	/**
 	 * Take the working directory and quest a workflow entry names. The
 	 * last one wins, because a session can be re-pointed at another quest
 	 * part way through and the later statement is the current one.
