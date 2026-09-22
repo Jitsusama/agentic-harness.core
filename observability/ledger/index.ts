@@ -1,13 +1,16 @@
 /**
- * The ledger: billable turns read back out of session logs.
+ * The ledger: a store of billable turns, and what one is.
  *
- * Cost is derived from the logs pi already writes rather than recorded a
- * second time, so there is exactly one writer of the truth and the ledger
- * can be rebuilt from scratch whenever its shape changes.
+ * Cost is derived from the logs a harness already writes rather than
+ * recorded a second time, so there is exactly one writer of the truth
+ * and the ledger can be rebuilt from scratch whenever its shape
+ * changes.
+ *
+ * Reading those logs is not here. A turn is a portable idea; the format
+ * it was written in is not, so each harness parses its own and hands
+ * over records. This module knows what a turn is and where to keep it.
  */
 
-export { readTurns } from "./scan.js";
-export { repoOf } from "./session.js";
 export {
 	type CostDimension,
 	type CostSlice,
@@ -16,10 +19,4 @@ export {
 	type RecordOutcome,
 	type TurnStore,
 } from "./store.js";
-export type {
-	LedgerScan,
-	ScanCoverage,
-	SessionRecord,
-	TurnKind,
-	TurnRecord,
-} from "./types.js";
+export type { SessionRecord, TurnKind, TurnRecord } from "./types.js";

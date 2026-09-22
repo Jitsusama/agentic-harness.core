@@ -37,23 +37,6 @@ export interface TurnRecord {
 }
 
 /**
- * What a scan saw, so any aggregate built on it can state its own
- * coverage. An aggregate that cannot say what it missed is not evidence.
- */
-export interface ScanCoverage {
-	/** Lines offered to the scan. */
-	readonly lines: number;
-	/** Lines that parsed as JSON. */
-	readonly parsed: number;
-	/** Lines that did not, counted rather than thrown. */
-	readonly unparseable: number;
-	/** Turns carrying a cost. */
-	readonly billable: number;
-	/** Turns that should have carried a cost and did not. */
-	readonly unmetered: number;
-}
-
-/**
  * What a session log says about itself.
  *
  * Every field but the id may be absent, and absent is kept rather than
@@ -72,11 +55,4 @@ export interface SessionRecord {
 	readonly firstSeen: string | null;
 	/** Timestamp of the latest billed turn. */
 	readonly lastSeen: string | null;
-}
-
-/** The turns one session log yielded, and what reading it missed. */
-export interface LedgerScan {
-	readonly turns: TurnRecord[];
-	readonly coverage: ScanCoverage;
-	readonly session: SessionRecord;
 }

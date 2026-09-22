@@ -9,20 +9,19 @@
  * they age out, and drive a compact status-line figure.
  *
  * The ledger beside it covers the other side of the bill: the
- * main loop's own turns, read back out of session logs and
- * addressed by content so a total can be trusted.
+ * main loop's own turns, addressed by content so a total can
+ * be trusted.
+ *
+ * Reading a harness's log format into those turns is that
+ * harness's own business and lives in its package.
  */
 
 export {
 	type CostDimension,
 	type CostSlice,
-	type LedgerScan,
 	type LedgerTotal,
 	openTurnStore,
 	type RecordOutcome,
-	readTurns,
-	repoOf,
-	type ScanCoverage,
 	type SessionRecord,
 	type TurnKind,
 	type TurnRecord,
