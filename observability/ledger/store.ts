@@ -1,5 +1,7 @@
 import { type Db, openDb } from "../../internal/sqlite/db.js";
 import type {
+	DroppedCallRecord,
+	Regret,
 	RepeatedCall,
 	SessionRecord,
 	ToolCallRecord,
@@ -47,6 +49,10 @@ export interface TurnStore {
 	queryCalls(): Promise<ToolCallRecord[]>;
 	/** Arguments asked more than once in one session, heaviest first. */
 	repeatedCalls(): Promise<RepeatedCall[]>;
+	recordDropped(dropped: readonly DroppedCallRecord[]): Promise<RecordOutcome>;
+	queryDropped(): Promise<DroppedCallRecord[]>;
+	/** Dropped calls asked again after the drop, earliest re-ask first. */
+	regret(): Promise<Regret[]>;
 	total(): Promise<LedgerTotal>;
 	costBy(dimension: CostDimension): Promise<CostSlice[]>;
 	close(): Promise<void>;
@@ -103,6 +109,12 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 );
 CREATE INDEX IF NOT EXISTS tool_calls_args ON tool_calls (session_id, args_digest);
 CREATE INDEX IF NOT EXISTS tool_calls_path ON tool_calls (path);
+CREATE TABLE IF NOT EXISTS dropped_calls (
+	digest TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL,
+	dropped_at_entry_id TEXT NOT NULL,
+	dropped_at_timestamp TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sessions (
 	session_id TEXT PRIMARY KEY,
 	cwd TEXT,
@@ -338,6 +350,93 @@ class SqliteTurnStore implements TurnStore {
 		}));
 	}
 
+	async recordDropped(
+		dropped: readonly DroppedCallRecord[],
+	): Promise<RecordOutcome> {
+		const fresh = new Map<string, DroppedCallRecord>();
+		for (const d of dropped) {
+			if (!fresh.has(d.callDigest)) fresh.set(d.callDigest, d);
+		}
+		const known = await this.alreadyHeld("dropped_calls", [...fresh.keys()]);
+
+		await this.db.exec("BEGIN");
+		try {
+			let inserted = 0;
+			for (const d of fresh.values()) {
+				if (known.has(d.callDigest)) continue;
+				inserted += 1;
+				await this.db.run(
+					`INSERT INTO dropped_calls (
+						digest, session_id, dropped_at_entry_id, dropped_at_timestamp
+					) VALUES (?, ?, ?, ?)`,
+					[d.callDigest, d.sessionId, d.droppedAtEntryId, d.droppedAtTimestamp],
+				);
+			}
+			await this.db.exec("COMMIT");
+			return { inserted, duplicates: dropped.length - inserted };
+		} catch (error) {
+			await this.db.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	async queryDropped(): Promise<DroppedCallRecord[]> {
+		const rows = await this.db.all<{
+			digest: string;
+			session_id: string;
+			dropped_at_entry_id: string;
+			dropped_at_timestamp: string;
+		}>("SELECT * FROM dropped_calls ORDER BY dropped_at_timestamp ASC");
+		return rows.map((row) => ({
+			callDigest: row.digest,
+			sessionId: row.session_id,
+			droppedAtEntryId: row.dropped_at_entry_id,
+			droppedAtTimestamp: row.dropped_at_timestamp,
+		}));
+	}
+
+	/**
+	 * Dropped calls asked again after the drop.
+	 *
+	 * Joined on the dropped call's own arguments and session, restricted
+	 * to a later call that came after the drop rather than before it: a
+	 * repeat that predates the drop is an ordinary repeat, not a case of
+	 * the context having to re-fetch what it lost.
+	 */
+	async regret(): Promise<Regret[]> {
+		const rows = await this.db.all<{
+			name: string;
+			args_digest: string;
+			session_id: string;
+			dropped_at_timestamp: string;
+			re_asked_at_timestamp: string;
+			result_chars: number | null;
+		}>(
+			`SELECT dropped_calls.session_id AS session_id,
+				dropped.name AS name,
+				dropped.args_digest AS args_digest,
+				dropped_calls.dropped_at_timestamp AS dropped_at_timestamp,
+				re_ask.timestamp AS re_asked_at_timestamp,
+				re_ask.result_chars AS result_chars
+			FROM dropped_calls
+			JOIN tool_calls AS dropped
+				ON dropped.digest = dropped_calls.digest
+			JOIN tool_calls AS re_ask
+				ON re_ask.session_id = dropped_calls.session_id
+				AND re_ask.args_digest = dropped.args_digest
+				AND re_ask.timestamp > dropped_calls.dropped_at_timestamp
+			ORDER BY re_ask.timestamp ASC`,
+		);
+		return rows.map((row) => ({
+			name: row.name,
+			argsDigest: row.args_digest,
+			sessionId: row.session_id,
+			droppedAtTimestamp: row.dropped_at_timestamp,
+			reAskedAtTimestamp: row.re_asked_at_timestamp,
+			resultChars: row.result_chars,
+		}));
+	}
+
 	async recordSession(session: SessionRecord): Promise<void> {
 		await this.db.run(
 			`INSERT INTO sessions (
@@ -405,7 +504,7 @@ class SqliteTurnStore implements TurnStore {
 	 * corpus-sized batch stays inside SQLite's bound-variable ceiling.
 	 */
 	private async alreadyHeld(
-		table: "turns" | "tool_calls",
+		table: "turns" | "tool_calls" | "dropped_calls",
 		digests: readonly string[],
 	): Promise<Set<string>> {
 		const found = new Set<string>();
