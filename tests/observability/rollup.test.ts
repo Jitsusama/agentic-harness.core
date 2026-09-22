@@ -33,8 +33,11 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
 	};
 }
 
-describe("RunStore rollup", () => {
-	it("merges same-bucket rows, buckets by week/model/persona, and drops the raw rows", async () => {
+describe("RunStore summaries", () => {
+	it("keeps every row, however old, and summarises without deleting", async () => {
+		// Rolling up and deleting destroyed the detail behind 2,199 runs
+		// and $11,926 before this was noticed. The corpus is a rounding
+		// error on disk, so there is no case for discarding any of it.
 		const store = await openRunStore(":memory:");
 		const week1 = 1_700_000_000_000;
 		const week2 = week1 + 8 * 24 * 60 * 60 * 1000;
@@ -53,12 +56,9 @@ describe("RunStore rollup", () => {
 			run({ subagentId: "c", startedAt: week2, persona: "other" }),
 		);
 
-		const result = await store.rollupBefore(week2 + 24 * 60 * 60 * 1000);
-
-		expect(result.rolledRows).toBe(3);
-		expect(await store.queryRuns()).toEqual([]);
-
 		const rollups = await store.queryRollups();
+
+		expect(await store.queryRuns()).toHaveLength(3);
 		expect(rollups).toHaveLength(2);
 		const merged = rollups.find((r) => r.persona === "reviewer");
 		expect(merged?.weekStart).toBe(Math.floor(week1 / WEEK_MS) * WEEK_MS);
@@ -68,34 +68,40 @@ describe("RunStore rollup", () => {
 		expect(merged?.tokensTotal).toBe(480);
 		expect(merged?.costTotal).toBeCloseTo(0.62);
 		expect(merged?.cacheReadRatio).toBeCloseTo(0.5);
-		const other = rollups.find((r) => r.persona === "other");
-		expect(other?.runCount).toBe(1);
+		expect(rollups.find((r) => r.persona === "other")?.runCount).toBe(1);
 		await store.close();
 	});
 
-	it("leaves rows newer than the cutoff untouched and merges into an existing bucket", async () => {
+	it("buckets by week, model and persona together", async () => {
 		const store = await openRunStore(":memory:");
 		const week1 = 1_700_000_000_000;
 		await store.recordRun(run({ subagentId: "a", startedAt: week1 }));
-		await store.rollupBefore(week1 + 1);
-		// A second old row in the same bucket, rolled later, must
-		// add to the existing rollup rather than create a new one.
 		await store.recordRun(
-			run({ subagentId: "b", startedAt: week1 + 1000, retriesToValid: 5 }),
+			run({ subagentId: "b", startedAt: week1 + 1000, model: "sonnet" }),
 		);
 		await store.recordRun(
-			run({ subagentId: "fresh", startedAt: week1 + 100 * WEEK_MS }),
+			run({ subagentId: "c", startedAt: week1 + 60 * WEEK_MS }),
 		);
 
-		await store.rollupBefore(week1 + 2000);
+		expect(await store.queryRollups()).toHaveLength(3);
+		await store.close();
+	});
 
-		const rollups = await store.queryRollups();
-		expect(rollups).toHaveLength(1);
-		expect(rollups[0].runCount).toBe(2);
-		expect(rollups[0].totalRetries).toBe(5);
-		// The fresh row is newer than the cutoff, so it stays raw.
-		expect(await store.queryRuns()).toHaveLength(1);
-		expect((await store.queryRuns())[0].subagentId).toBe("fresh");
+	it("reports a summary that is current the moment a row lands", async () => {
+		// Computing rather than materialising means there is no pass to
+		// wait for and no window in which the answer is stale.
+		const store = await openRunStore(":memory:");
+		await store.recordRun(run({ subagentId: "a" }));
+		expect((await store.queryRollups())[0].runCount).toBe(1);
+
+		await store.recordRun(run({ subagentId: "b" }));
+		expect((await store.queryRollups())[0].runCount).toBe(2);
+		await store.close();
+	});
+
+	it("has nothing to say about an empty store", async () => {
+		const store = await openRunStore(":memory:");
+		expect(await store.queryRollups()).toEqual([]);
 		await store.close();
 	});
 });

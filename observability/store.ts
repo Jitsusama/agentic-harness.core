@@ -18,7 +18,11 @@ export interface RunStore {
 	recordRun(record: RunRecord): Promise<void>;
 	queryRuns(filter?: RunQuery): Promise<RunRecord[]>;
 	summarizeRun(runId: string): Promise<RunSummary | null>;
-	rollupBefore(cutoffMs: number): Promise<{ rolledRows: number }>;
+	/**
+	 * Weekly per-model, per-persona summaries, computed from the rows
+	 * rather than materialised beside them. Nothing has to run for this
+	 * to be current, and no row is ever discarded to produce it.
+	 */
 	queryRollups(): Promise<RunRollup[]>;
 	close(): Promise<void>;
 }
@@ -48,6 +52,11 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS runs_run_id ON runs (run_id);
 CREATE INDEX IF NOT EXISTS runs_started_at ON runs (started_at);
+/**
+ * The rollups table is legacy and is never written to again. It holds
+ * the only surviving record of 2,199 runs whose raw rows an earlier
+ * retention pass deleted, so it is read and never dropped.
+ */
 CREATE TABLE IF NOT EXISTS rollups (
 	week_start INTEGER NOT NULL,
 	model TEXT NOT NULL,
@@ -194,43 +203,37 @@ class SqliteRunStore implements RunStore {
 		};
 	}
 
-	async rollupBefore(cutoffMs: number): Promise<{ rolledRows: number }> {
-		const counted = await this.db.all<{ n: number }>(
-			"SELECT COUNT(*) AS n FROM runs WHERE started_at < ?",
-			[cutoffMs],
-		);
-		const rolledRows = counted[0]?.n ?? 0;
-		if (rolledRows === 0) return { rolledRows: 0 };
-		await this.db.run(
-			`INSERT INTO rollups (
-				week_start, model, persona, run_count, total_retries, total_warnings,
-				tokens_total, cost_total, cache_read, fresh_input
-			)
-			SELECT
-				(started_at / ${WEEK_MS}) * ${WEEK_MS} AS week_start,
-				model, persona,
-				COUNT(*), SUM(retries_to_valid), SUM(warning_count),
-				SUM(tokens_total), SUM(cost_total),
-				SUM(tokens_cache_read), SUM(tokens_input + tokens_cache_read)
-			FROM runs WHERE started_at < ?
-			GROUP BY week_start, model, persona
-			ON CONFLICT(week_start, model, persona) DO UPDATE SET
-				run_count = run_count + excluded.run_count,
-				total_retries = total_retries + excluded.total_retries,
-				total_warnings = total_warnings + excluded.total_warnings,
-				tokens_total = tokens_total + excluded.tokens_total,
-				cost_total = cost_total + excluded.cost_total,
-				cache_read = cache_read + excluded.cache_read,
-				fresh_input = fresh_input + excluded.fresh_input`,
-			[cutoffMs],
-		);
-		await this.db.run("DELETE FROM runs WHERE started_at < ?", [cutoffMs]);
-		return { rolledRows };
-	}
-
+	/**
+	 * Summaries over every row held, unioned with the legacy table.
+	 *
+	 * Computed rather than materialised, because the only reason to
+	 * materialise was that the rows behind it were being deleted. They
+	 * are not any more: the whole corpus is a rounding error on disk and
+	 * discarding detail to save it was never a trade worth making.
+	 *
+	 * The legacy rows are unioned in rather than ignored, since for the
+	 * period before this changed they are all that is left.
+	 */
 	async queryRollups(): Promise<RunRollup[]> {
 		const rows = await this.db.all<RollupRow>(
-			"SELECT * FROM rollups ORDER BY week_start ASC, model ASC, persona ASC",
+			`SELECT * FROM (
+				SELECT
+					(started_at / ${WEEK_MS}) * ${WEEK_MS} AS week_start,
+					model, persona,
+					COUNT(*) AS run_count,
+					SUM(retries_to_valid) AS total_retries,
+					SUM(warning_count) AS total_warnings,
+					SUM(tokens_total) AS tokens_total,
+					SUM(cost_total) AS cost_total,
+					SUM(tokens_cache_read) AS cache_read,
+					SUM(tokens_input + tokens_cache_read) AS fresh_input
+				FROM runs GROUP BY week_start, model, persona
+				UNION ALL
+				SELECT week_start, model, persona, run_count, total_retries,
+					total_warnings, tokens_total, cost_total, cache_read, fresh_input
+				FROM rollups
+			)
+			ORDER BY week_start ASC, model ASC, persona ASC`,
 		);
 		return rows.map((row) => ({
 			weekStart: row.week_start,
