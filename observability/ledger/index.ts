@@ -7,6 +7,14 @@
  */
 
 export { readTurns } from "./scan.js";
+export {
+	type CostDimension,
+	type CostSlice,
+	type LedgerTotal,
+	openTurnStore,
+	type RecordOutcome,
+	type TurnStore,
+} from "./store.js";
 export type {
 	LedgerScan,
 	ScanCoverage,
