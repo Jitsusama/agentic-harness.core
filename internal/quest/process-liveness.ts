@@ -160,14 +160,28 @@ export function identityFromInspection(
 		: undefined;
 }
 
+/** Memoized identity of this process, once one has been read. */
+let processIdentityCache: ProcessIdentity | undefined;
+
 /**
  * Identity of the currently running pi process, for capture onto the
  * session it is attached to. Undefined when the OS reader could not
  * read a real start token: a session then carries no process identity
  * and its liveness falls back to recency, rather than a synthetic
  * token that a later probe would read as a dead mismatch.
+ *
+ * A process's own start token cannot change while it runs, so the
+ * first real reading is remembered: a session start attaches more
+ * than once and each reading is a synchronous `ps`. A failed reading
+ * is not remembered, so a transient failure is retried next time.
  */
 export function currentProcessIdentity(): ProcessIdentity | undefined {
+	processIdentityCache ??= readProcessIdentity();
+	return processIdentityCache;
+}
+
+/** Read this process's identity from the OS. */
+function readProcessIdentity(): ProcessIdentity | undefined {
 	const identity = identityFromInspection(
 		hostname(),
 		process.pid,
