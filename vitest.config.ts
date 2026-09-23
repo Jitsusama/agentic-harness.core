@@ -10,5 +10,6 @@ export default defineConfig({
 	test: {
 		include: ["tests/**/*.test.ts"],
 		exclude: ["tests/browser/**"],
+		globalSetup: ["./tests/setup/temp-root.ts"],
 	},
 });
