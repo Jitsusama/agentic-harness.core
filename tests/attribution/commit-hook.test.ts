@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	buildPrepareCommitMsgHook,
 	type CommitHookOptions,
@@ -16,6 +16,22 @@ import {
 	installCommitHook,
 	repoRootOf,
 } from "../../attribution/commit-hook.js";
+
+// Wrap execFileSync so a test can count the git processes a call starts:
+// each one is a synchronous spawn on pi's startup and command path.
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+});
+
+const spawned = vi.mocked(execFileSync);
+
+/** How many git processes fn started. */
+function gitCallsDuring(fn: () => void): number {
+	spawned.mockClear();
+	fn();
+	return spawned.mock.calls.filter(([command]) => command === "git").length;
+}
 
 const TRAILER = "Co-Authored-By: AI (Claude Opus 4.6 via Pi) <noreply@pi.dev>";
 
@@ -107,6 +123,64 @@ describe("ensureCommitHook", () => {
 		).trim();
 		expect(existsSync(join(repo, hooksDir, "prepare-commit-msg"))).toBe(true);
 		expect(installed.has(repoRootOf(sub) ?? "")).toBe(true);
+	});
+
+	it("asks git once to install into a repo it has not seen", () => {
+		const repo = initRepo();
+		const sub = join(repo, "a");
+		mkdirSync(sub);
+
+		const calls = gitCallsDuring(() =>
+			ensureCommitHook(sub, new Set(), OPTIONS),
+		);
+
+		expect(calls).toBe(1);
+		expect(existsSync(join(repo, ".git/hooks/prepare-commit-msg"))).toBe(true);
+	});
+
+	it("asks git nothing for a directory it has already handled", () => {
+		const repo = initRepo();
+		const sub = join(repo, "a");
+		mkdirSync(sub);
+		const installed = new Set<string>();
+		ensureCommitHook(sub, installed, OPTIONS);
+
+		const again = gitCallsDuring(() => {
+			ensureCommitHook(sub, installed, OPTIONS);
+			ensureCommitHook(repoRootOf(sub) ?? "", installed, OPTIONS);
+		});
+
+		// repoRootOf itself is one call; ensureCommitHook adds none.
+		expect(again).toBe(1);
+	});
+
+	it("installs into the shared hooks of a linked worktree", () => {
+		const repo = initRepo();
+		execFileSync("git", [
+			"-C",
+			repo,
+			"commit",
+			"-q",
+			"--allow-empty",
+			"-m",
+			"x",
+		]);
+		const linked = join(tempDir(), "linked");
+		execFileSync("git", ["-C", repo, "worktree", "add", "-q", linked]);
+
+		ensureCommitHook(linked, new Set(), OPTIONS);
+
+		expect(existsSync(join(repo, ".git/hooks/prepare-commit-msg"))).toBe(true);
+	});
+
+	it("leaves a repo with a custom core.hooksPath alone", () => {
+		const repo = initRepo();
+		execFileSync("git", ["-C", repo, "config", "core.hooksPath", ".husky"]);
+
+		ensureCommitHook(repo, new Set(), OPTIONS);
+
+		expect(existsSync(join(repo, ".husky/prepare-commit-msg"))).toBe(false);
+		expect(existsSync(join(repo, ".git/hooks/prepare-commit-msg"))).toBe(false);
 	});
 
 	it("is a no-op for a directory outside any git repo", () => {

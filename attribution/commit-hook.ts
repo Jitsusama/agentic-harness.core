@@ -79,19 +79,22 @@ export function installCommitHook(
 	repoRoot: string,
 	options: CommitHookOptions,
 ): HookInstall {
+	const layout = locateHooks(repoRoot);
+	if (!layout) return { installed: false, reason: "not a git repo" };
+	return installInto(layout, options);
+}
+
+/** Install the hook into a repo whose hooks have been located. */
+function installInto(
+	{ hooksDir, customHooksPath }: HooksLayout,
+	options: CommitHookOptions,
+): HookInstall {
 	// A custom core.hooksPath means a hook manager (husky and the
 	// like) or a shared, possibly version-controlled hooks directory
 	// owns the hooks. Leave it alone rather than write this adapter's
 	// hook into a directory it does not own.
-	if (hasCustomHooksPath(repoRoot)) {
+	if (customHooksPath) {
 		return { installed: false, reason: "custom core.hooksPath configured" };
-	}
-
-	let hooksDir: string;
-	try {
-		hooksDir = resolveHooksDir(repoRoot);
-	} catch (error) {
-		return { installed: false, reason: `not a git repo: ${String(error)}` };
 	}
 
 	const target = join(hooksDir, "prepare-commit-msg");
@@ -124,52 +127,79 @@ export function installCommitHook(
 	return { installed: true };
 }
 
-/** Whether the repo configures a custom core.hooksPath. */
-function hasCustomHooksPath(repoRoot: string): boolean {
-	try {
-		const value = execFileSync(
-			"git",
-			["-C", repoRoot, "config", "--get", "core.hooksPath"],
-			{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-		).trim();
-		return value.length > 0;
-	} catch {
-		// git config exits non-zero when the key is unset: no custom path.
-		return false;
-	}
-}
-
 /**
  * Ensure the hook is installed in the repo containing dir, at most
- * once per repo root. Resolves the repo, records it in `installed`
- * so later commands in the same repo are skipped, and installs
- * best-effort. A directory outside any git repo is a no-op. This is
- * how hook coverage follows the session into repos it later cds
- * into, rather than only the repo the session started in.
+ * once per repo. Records both dir and its repo root in `installed`,
+ * so a later command from either asks git nothing, and installs
+ * best-effort. A directory outside any git repo is a no-op and is
+ * not remembered, so a repo initialised there later is still
+ * covered. This is how hook coverage follows the session into repos
+ * it later cds into, rather than only the repo the session started
+ * in. Each git call is a synchronous spawn on the command path, so
+ * a first visit costs one and a repeat costs none.
  */
 export function ensureCommitHook(
 	dir: string,
 	installed: Set<string>,
 	options: CommitHookOptions,
 ): void {
-	const root = repoRootOf(dir);
-	if (!root || installed.has(root)) return;
-	installed.add(root);
+	if (installed.has(dir)) return;
+	const layout = locateHooks(dir);
+	if (!layout) return;
+	installed.add(dir);
+	if (installed.has(layout.root)) return;
+	installed.add(layout.root);
 	try {
-		installCommitHook(root, options);
+		installInto(layout, options);
 	} catch {
 		// Best-effort: never let hook installation break a command.
 	}
 }
 
-/** Resolve the active hooks directory, honouring core.hooksPath. */
-function resolveHooksDir(repoRoot: string): string {
-	const path = execFileSync(
-		"git",
-		["-C", repoRoot, "rev-parse", "--git-path", "hooks"],
-		{ encoding: "utf8" },
-	).trim();
-	return isAbsolute(path) ? path : join(repoRoot, path);
+/** Where a repo keeps its hooks. */
+interface HooksLayout {
+	/** The working tree's root. */
+	readonly root: string;
+	/** The active hooks directory, honouring core.hooksPath. */
+	readonly hooksDir: string;
+	/** Whether core.hooksPath moves the hooks away from the default. */
+	readonly customHooksPath: boolean;
+}
+
+/**
+ * Locate the hooks of the repo containing dir with one git call, or
+ * null when dir is in no working tree. Git prints the default hooks
+ * path as the common dir plus `/hooks`, in the same form, so any
+ * other answer means core.hooksPath points somewhere else.
+ */
+function locateHooks(dir: string): HooksLayout | null {
+	let answer: string;
+	try {
+		answer = execFileSync(
+			"git",
+			[
+				"-C",
+				dir,
+				"rev-parse",
+				"--show-toplevel",
+				"--git-common-dir",
+				"--git-path",
+				"hooks",
+			],
+			{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+		);
+	} catch {
+		// Not in a working tree (or git unavailable): nothing to hook.
+		return null;
+	}
+	const [root, commonDir, hooks] = answer.trimEnd().split("\n");
+	if (!root || !commonDir || !hooks) return null;
+	return {
+		root,
+		// Relative paths are relative to the directory git ran in.
+		hooksDir: isAbsolute(hooks) ? hooks : join(dir, hooks),
+		customHooksPath: hooks !== `${commonDir}/hooks`,
+	};
 }
 
 /** The git repository root containing dir, or null when there is none. */
