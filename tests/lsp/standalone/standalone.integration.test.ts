@@ -152,3 +152,52 @@ describe.skipIf(!hasServer)("standalone backend (live server)", () => {
 		).rejects.toBeInstanceOf(MissingServerError);
 	});
 });
+
+// A language server holds hundreds of megabytes for as long as it
+// runs, so one nobody has asked anything of lately is stopped and
+// started again on demand.
+describe.skipIf(!hasServer)("standalone backend idle shutdown", () => {
+	const IDLE_MS = 300;
+	let backend: StandaloneBackend;
+	let project: string;
+	let file: string;
+
+	beforeAll(() => {
+		project = mkdtempSync(join(tmpdir(), "lsp-idle-"));
+		writeFileSync(
+			join(project, "tsconfig.json"),
+			JSON.stringify({ compilerOptions: { strict: true }, include: ["*.ts"] }),
+		);
+		writeFileSync(join(project, "package.json"), JSON.stringify({ name: "i" }));
+		file = join(project, "a.ts");
+		writeFileSync(file, 'const n: number = "x";\nexport default n;\n');
+		const env = {
+			...process.env,
+			PATH: `${join(repoRoot, "node_modules", ".bin")}${delimiter}${process.env.PATH ?? ""}`,
+		};
+		backend = createStandaloneBackend({ env, idleMs: IDLE_MS });
+	});
+
+	afterAll(async () => {
+		await backend?.dispose();
+		if (project) rmSync(project, { recursive: true, force: true });
+	});
+
+	it(
+		"stops a server left idle and starts it again on the next call",
+		async () => {
+			// A cold start takes longer than the idle window, so this also
+			// shows a call in flight is never counted as idle.
+			const first = await backend.diagnostics(file);
+			expect(backend.serverCount()).toBe(1);
+
+			await new Promise((r) => setTimeout(r, IDLE_MS * 3));
+			expect(backend.serverCount()).toBe(0);
+
+			const again = await backend.diagnostics(file);
+			expect(backend.serverCount()).toBe(1);
+			expect(again).toEqual(first);
+		},
+		LIVE_TIMEOUT_MS,
+	);
+});
