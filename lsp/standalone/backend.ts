@@ -11,6 +11,12 @@
  * file. When nothing resolves, it fails with a clear message
  * rather than a cryptic one.
  *
+ * A server nobody has called for `idleMs` is stopped and dropped
+ * from the pool, and the next call for its root starts a fresh
+ * one: a TypeScript server holds hundreds of megabytes, and a long
+ * session touches many roots it never returns to. A call in
+ * flight keeps its servers alive however long it takes.
+ *
  * The live server pool lives in this closure's memory for the
  * life of the process that constructs it. A stateless-per-call
  * CLI adapter that wants warm servers across invocations needs
@@ -56,7 +62,16 @@ export interface StandaloneBackendOptions {
 	readonly servers?: Readonly<Record<string, ServerConfig>>;
 	/** Environment used for PATH resolution. Defaults to process.env. */
 	readonly env?: NodeJS.ProcessEnv;
+	/** How long a server may sit unused before it is stopped. */
+	readonly idleMs?: number;
 }
+
+/**
+ * Default idle window. Long enough that a burst of work on one
+ * project keeps its server warm, short enough that a project left
+ * behind gives its memory back within the hour.
+ */
+const DEFAULT_IDLE_MS = 10 * 60_000;
 
 /** A standalone backend with visibility into its live pool. */
 export interface StandaloneBackend extends LspBackend {
@@ -72,21 +87,56 @@ export function createStandaloneBackend(
 ): StandaloneBackend {
 	const servers = options.servers ?? DEFAULT_SERVERS;
 	const env = options.env ?? process.env;
+	const idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
 	const pool = new Map<string, Promise<StandaloneServer>>();
+	// Calls in flight per pool key, and the stop timer armed when a
+	// key's last call finishes.
+	const inFlight = new Map<string, number>();
+	const idleTimers = new Map<string, NodeJS.Timeout>();
 
 	const poolKey = (name: string, root: string): string => `${name}|${root}`;
+
+	const claim = (key: string): void => {
+		inFlight.set(key, (inFlight.get(key) ?? 0) + 1);
+		clearTimeout(idleTimers.get(key));
+		idleTimers.delete(key);
+	};
+
+	const release = (key: string): void => {
+		const left = (inFlight.get(key) ?? 1) - 1;
+		if (left > 0) {
+			inFlight.set(key, left);
+			return;
+		}
+		inFlight.delete(key);
+		const timer = setTimeout(() => stopIdle(key), idleMs);
+		// An idle server must never be what keeps the process alive.
+		timer.unref();
+		idleTimers.set(key, timer);
+	};
+
+	const stopIdle = (key: string): void => {
+		idleTimers.delete(key);
+		if (inFlight.has(key)) return;
+		const started = pool.get(key);
+		pool.delete(key);
+		void started?.then(
+			(server) => server.dispose(),
+			() => {},
+		);
+	};
 
 	const instanceFor = (
 		server: ServerConfig,
 		root: string,
 		binary: string,
-	): Promise<StandaloneServer> => {
+	): { key: string; started: Promise<StandaloneServer> } => {
 		const key = poolKey(server.name, root);
 		const existing = pool.get(key);
-		if (existing) return existing;
+		if (existing) return { key, started: existing };
 		const started = StandaloneServer.start(server, root, binary);
 		pool.set(key, started);
-		return started;
+		return { key, started };
 	};
 
 	// Resolve a server's effective command and args for a root. A
@@ -115,9 +165,28 @@ export function createStandaloneBackend(
 		};
 	};
 
+	/**
+	 * Run fn against the servers for a file, holding each one's pool
+	 * key claimed from before it resolves until fn settles, so no
+	 * server is stopped under a call that is using it.
+	 */
+	const withInstances = async <T>(
+		filePath: string,
+		typeOnly: boolean,
+		fn: (instances: StandaloneServer[]) => Promise<T>,
+	): Promise<T> => {
+		const claimed: string[] = [];
+		try {
+			return await fn(await resolveInstances(filePath, typeOnly, claimed));
+		} finally {
+			for (const key of claimed) release(key);
+		}
+	};
+
 	const resolveInstances = async (
 		filePath: string,
 		typeOnly: boolean,
+		claimed: string[],
 	): Promise<StandaloneServer[]> => {
 		const candidates = serversForFile(filePath, servers).filter(
 			(server) => !typeOnly || !server.isLinter,
@@ -135,7 +204,10 @@ export function createStandaloneBackend(
 				reasons.push(eff.reason);
 				continue;
 			}
-			instances.push(await instanceFor(eff.config, root, eff.binary));
+			const { key, started } = instanceFor(eff.config, root, eff.binary);
+			claim(key);
+			claimed.push(key);
+			instances.push(await started);
 			if (typeOnly) break;
 		}
 		if (instances.length === 0) {
@@ -151,49 +223,66 @@ export function createStandaloneBackend(
 		name: "standalone",
 
 		async diagnostics(path: string): Promise<Diagnostic[]> {
-			const instances = await resolveInstances(path, false);
-			const results = await Promise.all(instances.map((s) => s.diagnose(path)));
-			return results.flat();
+			return withInstances(path, false, async (instances) => {
+				const results = await Promise.all(
+					instances.map((s) => s.diagnose(path)),
+				);
+				return results.flat();
+			});
 		},
 
 		async definition(target: LspTarget): Promise<LspLocation[]> {
-			const [server] = await resolveInstances(target.path, true);
-			return server.definition(target);
+			return withInstances(target.path, true, ([server]) =>
+				server.definition(target),
+			);
 		},
 
 		async references(target: LspTarget): Promise<LspLocation[]> {
-			const [server] = await resolveInstances(target.path, true);
-			return server.references(target);
+			return withInstances(target.path, true, ([server]) =>
+				server.references(target),
+			);
 		},
 
 		async hover(target: LspTarget): Promise<HoverInfo | null> {
-			const [server] = await resolveInstances(target.path, true);
-			return server.hover(target);
+			return withInstances(target.path, true, ([server]) =>
+				server.hover(target),
+			);
 		},
 
 		async documentSymbols(path: string): Promise<SymbolInfo[]> {
-			const [server] = await resolveInstances(path, true);
-			return server.documentSymbols(path);
+			return withInstances(path, true, ([server]) =>
+				server.documentSymbols(path),
+			);
 		},
 
 		async workspaceSymbols(query: string): Promise<SymbolInfo[]> {
 			// Workspace symbols carry no file, so they search every
-			// server already running; nothing is spawned on demand.
-			const live = await Promise.all([...pool.values()]);
-			const results = await Promise.all(
-				live.map((server) => server.workspaceSymbols(query)),
-			);
-			return results.flat();
+			// server already running; nothing is spawned on demand, and
+			// a server stopped for idleness is not searched until
+			// something file-bound starts it again.
+			const keys = [...pool.keys()];
+			for (const key of keys) claim(key);
+			try {
+				const live = await Promise.all(keys.map((key) => pool.get(key)));
+				const results = await Promise.all(
+					live.map((server) => server?.workspaceSymbols(query) ?? []),
+				);
+				return results.flat();
+			} finally {
+				for (const key of keys) release(key);
+			}
 		},
 
 		async rename(target: LspTarget, newName: string): Promise<WorkspaceEdit> {
-			const [server] = await resolveInstances(target.path, true);
-			return server.rename(target, newName);
+			return withInstances(target.path, true, ([server]) =>
+				server.rename(target, newName),
+			);
 		},
 
 		async codeActions(path: string, range?: LspRange): Promise<CodeAction[]> {
-			const [server] = await resolveInstances(path, true);
-			return server.codeActions(path, range);
+			return withInstances(path, true, ([server]) =>
+				server.codeActions(path, range),
+			);
 		},
 
 		syncDocument(path: string, text: string): void {
@@ -209,6 +298,8 @@ export function createStandaloneBackend(
 		},
 
 		async dispose(): Promise<void> {
+			for (const timer of idleTimers.values()) clearTimeout(timer);
+			idleTimers.clear();
 			const started = [...pool.values()];
 			pool.clear();
 			await Promise.all(
