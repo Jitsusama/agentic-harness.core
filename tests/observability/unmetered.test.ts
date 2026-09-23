@@ -17,8 +17,9 @@ function input(overrides: Partial<RunRecordInput> = {}): RunRecordInput {
 		kind: "council",
 		model: "anthropic/claude-opus-5",
 		persona: "correctness",
+		thinkingLevel: null,
 		startedAt: 1_700_000_000_000,
-		result: { exitCode: 0, warnings: [], usage: USAGE },
+		result: { exitCode: 0, sessionId: null, warnings: [], usage: USAGE },
 		...overrides,
 	};
 }
@@ -26,7 +27,7 @@ function input(overrides: Partial<RunRecordInput> = {}): RunRecordInput {
 describe("a run that reported no usage", () => {
 	it("still gets a record, so a round killed before billing is not invisible", () => {
 		const record = runRecordFrom(
-			input({ result: { exitCode: 1, warnings: [] } }),
+			input({ result: { exitCode: 1, sessionId: null, warnings: [] } }),
 		);
 
 		expect(record.runId).toBe("council-1");
@@ -38,7 +39,7 @@ describe("a run that reported no usage", () => {
 		// none was free: each died before it could report. Recording them
 		// at $0 made them indistinguishable from a run that cost nothing.
 		const record = runRecordFrom(
-			input({ result: { exitCode: 1, warnings: [] } }),
+			input({ result: { exitCode: 1, sessionId: null, warnings: [] } }),
 		);
 
 		expect(record.cost).toBeNull();
@@ -48,7 +49,9 @@ describe("a run that reported no usage", () => {
 	it("reads back as unknown after a round trip through the store", async () => {
 		const store = await openRunStore(":memory:");
 		await store.recordRun(
-			runRecordFrom(input({ result: { exitCode: 1, warnings: [] } })),
+			runRecordFrom(
+				input({ result: { exitCode: 1, sessionId: null, warnings: [] } }),
+			),
 		);
 
 		const [row] = await store.queryRuns();
@@ -61,7 +64,10 @@ describe("a run that reported no usage", () => {
 		await store.recordRun(runRecordFrom(input({ subagentId: "a" })));
 		await store.recordRun(
 			runRecordFrom(
-				input({ subagentId: "b", result: { exitCode: 1, warnings: [] } }),
+				input({
+					subagentId: "b",
+					result: { exitCode: 1, sessionId: null, warnings: [] },
+				}),
 			),
 		);
 

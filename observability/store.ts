@@ -98,6 +98,8 @@ interface RunRow {
 	cwd: string | null;
 	repo: string | null;
 	ended_at: number | null;
+	thinking_level: string | null;
+	subagent_session_id: string | null;
 }
 
 /**
@@ -144,7 +146,7 @@ async function migrate(db: Db): Promise<void> {
 		);
 	}
 
-	for (const [name, type] of ATTRIBUTION_COLUMNS) {
+	for (const [name, type] of [...ATTRIBUTION_COLUMNS, ...LAUNCH_COLUMNS]) {
 		if (!columns.has(name)) {
 			await db.exec(`ALTER TABLE runs ADD COLUMN ${name} ${type}`);
 		}
@@ -184,6 +186,15 @@ const ATTRIBUTION_COLUMNS: ReadonlyArray<readonly [string, string]> = [
 	["ended_at", "INTEGER"],
 ];
 
+/**
+ * How a run was launched, nullable for the same reason: rows written
+ * before these existed never said.
+ */
+const LAUNCH_COLUMNS: ReadonlyArray<readonly [string, string]> = [
+	["thinking_level", "TEXT"],
+	["subagent_session_id", "TEXT"],
+];
+
 class SqliteRunStore implements RunStore {
 	constructor(private readonly db: Db) {}
 
@@ -194,8 +205,9 @@ class SqliteRunStore implements RunStore {
 				retries_to_valid, warning_count, exit_code,
 				tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, tokens_total,
 				cost_input, cost_output, cost_cache_read, cost_cache_write, cost_total,
-				started_at, metered, session_id, cwd, repo, ended_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				started_at, metered, session_id, cwd, repo, ended_at,
+				thinking_level, subagent_session_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (run_id, subagent_id) DO UPDATE SET
 				kind = excluded.kind, model = excluded.model,
 				persona = excluded.persona, verify_outcome = excluded.verify_outcome,
@@ -214,7 +226,9 @@ class SqliteRunStore implements RunStore {
 				cost_total = excluded.cost_total,
 				started_at = excluded.started_at, metered = excluded.metered,
 				session_id = excluded.session_id, cwd = excluded.cwd,
-				repo = excluded.repo, ended_at = excluded.ended_at`,
+				repo = excluded.repo, ended_at = excluded.ended_at,
+				thinking_level = excluded.thinking_level,
+				subagent_session_id = excluded.subagent_session_id`,
 			[
 				record.runId,
 				record.subagentId,
@@ -244,6 +258,8 @@ class SqliteRunStore implements RunStore {
 				record.cwd ?? null,
 				record.repo ?? null,
 				record.endedAt ?? null,
+				record.thinkingLevel ?? null,
+				record.subagentSessionId ?? null,
 			],
 		);
 	}
@@ -428,5 +444,7 @@ function rowToRecord(row: RunRow): RunRecord {
 		cwd: row.cwd ?? null,
 		repo: row.repo ?? null,
 		endedAt: row.ended_at ?? null,
+		thinkingLevel: row.thinking_level ?? null,
+		subagentSessionId: row.subagent_session_id ?? null,
 	};
 }

@@ -63,6 +63,20 @@ export interface RunRecord {
 	/** When the run started, epoch milliseconds. */
 	readonly startedAt: number;
 	/**
+	 * The thinking level the run was launched at, or null when the
+	 * launch did not name one and the level it inherited is not known.
+	 * Required so a producer has to say, since a level left out reads
+	 * the same as one nobody knew.
+	 */
+	readonly thinkingLevel: string | null;
+	/**
+	 * The subagent process's own pi session id, as the child announced
+	 * it, which is the id billing rows carry. Distinct from
+	 * {@link sessionId}, the parent that dispatched it. Null when the
+	 * run had no child process or the child died before announcing one.
+	 */
+	readonly subagentSessionId: string | null;
+	/**
 	 * The parent session that dispatched the run, the directory it was
 	 * working in and the repo that directory belongs to. Stamped by the
 	 * sink rather than the producer, since the sink is what knows where

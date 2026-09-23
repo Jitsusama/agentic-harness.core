@@ -16,9 +16,16 @@ export interface RunRecordInput {
 	readonly kind: string;
 	readonly model: string;
 	readonly persona: string;
+	/** The thinking level the run was launched at, null when unknown. */
+	readonly thinkingLevel: string | null;
 	readonly startedAt: number;
 	readonly result: {
 		readonly exitCode: number;
+		/**
+		 * The session id the child process announced, null when there was
+		 * no child or it never announced one.
+		 */
+		readonly sessionId: string | null;
 		readonly warnings: readonly string[];
 		readonly usage?: { readonly tokens: RunTokens; readonly cost: RunCost };
 		readonly verification?: {
@@ -65,6 +72,8 @@ export function runRecordFrom(input: RunRecordInput): RunRecord {
 		tokens: result.usage?.tokens ?? null,
 		cost: result.usage?.cost ?? null,
 		startedAt: input.startedAt,
+		thinkingLevel: input.thinkingLevel,
+		subagentSessionId: result.sessionId,
 	};
 }
 

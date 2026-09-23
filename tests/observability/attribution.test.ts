@@ -15,6 +15,8 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
 		tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 },
 		cost: { input: 0.1, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.2 },
 		startedAt: 1_700_000_000_000,
+		thinkingLevel: null,
+		subagentSessionId: null,
 		...overrides,
 	};
 }
@@ -49,6 +51,38 @@ describe("run attribution", () => {
 		expect(row.sessionId).toBeNull();
 		expect(row.repo).toBeNull();
 		expect(row.endedAt).toBeNull();
+		await store.close();
+	});
+});
+
+describe("how a run was launched", () => {
+	it("records the thinking level and the subagent's own session", async () => {
+		// Billing rows carry the child process's pi session id, not the
+		// parent's, so without it a job can only be matched to its bill by
+		// summing tokens, which misses whenever one side has a call the
+		// other lacks. The thinking level is the other half of what a job
+		// cost: 30 percent of fleet jobs launch at xhigh.
+		const store = await openRunStore(":memory:");
+		await store.recordRun(
+			run({
+				thinkingLevel: "xhigh",
+				subagentSessionId: "01a0cff2-4244-75ad-b91b-7bdc1bc970b7",
+			}),
+		);
+
+		const [row] = await store.queryRuns();
+		expect(row.thinkingLevel).toBe("xhigh");
+		expect(row.subagentSessionId).toBe("01a0cff2-4244-75ad-b91b-7bdc1bc970b7");
+		await store.close();
+	});
+
+	it("holds nothing when the launch was not known", async () => {
+		const store = await openRunStore(":memory:");
+		await store.recordRun(run());
+
+		const [row] = await store.queryRuns();
+		expect(row.thinkingLevel).toBeNull();
+		expect(row.subagentSessionId).toBeNull();
 		await store.close();
 	});
 });
