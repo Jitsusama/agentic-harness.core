@@ -192,6 +192,18 @@ export interface RepeatedCall {
 	readonly repeated: number;
 	/** Characters the repeats re-admitted to the context. */
 	readonly repeatedChars: number;
+	/** Repeats with no verifier since the last ask: the waste bucket. */
+	readonly rework: number;
+	/** Characters the rework repeats re-admitted. */
+	readonly reworkChars: number;
+	/**
+	 * Repeats that are themselves a verifier, or that follow one run
+	 * since the last ask: the model checking its work, which is cost of
+	 * quality rather than waste.
+	 */
+	readonly appraisal: number;
+	/** Characters the appraisal repeats re-admitted. */
+	readonly appraisalChars: number;
 }
 
 /**

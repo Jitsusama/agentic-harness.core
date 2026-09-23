@@ -156,4 +156,120 @@ describe("tool calls in the store", () => {
 		expect(repeats[0]).toMatchObject({ repeated: 1, repeatedChars: 40 });
 		await store.close();
 	});
+
+	describe("rework against appraisal", () => {
+		// A repeat with a verifier between it and the last time the same
+		// thing was asked is the model checking its work, which is cost of
+		// quality, not waste. Only a repeat with none between is rework.
+		const at = (minute: number) =>
+			`2026-09-21T17:${String(minute).padStart(2, "0")}:00.000Z`;
+
+		it("calls a repeat with nothing between it and the last ask rework", async () => {
+			const store = await openTurnStore(":memory:");
+			await store.recordCalls([
+				call({ digest: "c1", name: "read", argsDigest: "r", timestamp: at(0) }),
+				call({
+					digest: "c2",
+					name: "read",
+					argsDigest: "r",
+					timestamp: at(1),
+					resultChars: 70,
+				}),
+			]);
+
+			const [repeat] = await store.repeatedCalls();
+			expect(repeat).toMatchObject({
+				repeated: 1,
+				rework: 1,
+				reworkChars: 70,
+				appraisal: 0,
+				appraisalChars: 0,
+			});
+			await store.close();
+		});
+
+		it("calls a repeat after a verifier ran appraisal", async () => {
+			const store = await openTurnStore(":memory:");
+			await store.recordCalls([
+				call({ digest: "c1", name: "read", argsDigest: "r", timestamp: at(0) }),
+				call({
+					digest: "v1",
+					argsDigest: "npm test",
+					verifierKind: "test",
+					timestamp: at(1),
+				}),
+				call({
+					digest: "c2",
+					name: "read",
+					argsDigest: "r",
+					timestamp: at(2),
+					resultChars: 70,
+				}),
+			]);
+
+			const repeats = await store.repeatedCalls({ retrieval: ["read"] });
+			expect(repeats[0]).toMatchObject({
+				repeated: 1,
+				rework: 0,
+				appraisal: 1,
+				appraisalChars: 70,
+			});
+			await store.close();
+		});
+
+		it("calls running a verifier again appraisal in itself", async () => {
+			const store = await openTurnStore(":memory:");
+			await store.recordCalls([
+				call({ digest: "v1", verifierKind: "test", timestamp: at(0) }),
+				call({ digest: "v2", verifierKind: "test", timestamp: at(1) }),
+			]);
+
+			const [repeat] = await store.repeatedCalls();
+			expect(repeat).toMatchObject({ repeated: 1, rework: 0, appraisal: 1 });
+			await store.close();
+		});
+
+		it("does not let a verifier before the first ask excuse the repeat", async () => {
+			const store = await openTurnStore(":memory:");
+			await store.recordCalls([
+				call({
+					digest: "v1",
+					argsDigest: "t",
+					verifierKind: "test",
+					timestamp: at(0),
+				}),
+				call({ digest: "c1", name: "read", argsDigest: "r", timestamp: at(1) }),
+				call({ digest: "c2", name: "read", argsDigest: "r", timestamp: at(2) }),
+			]);
+
+			const repeats = await store.repeatedCalls({ retrieval: ["read"] });
+			expect(repeats[0]).toMatchObject({ rework: 1, appraisal: 0 });
+			await store.close();
+		});
+
+		it("judges each repeat against the ask just before it", async () => {
+			// Three asks, a verifier between the second and third: the
+			// second is rework, the third appraisal.
+			const store = await openTurnStore(":memory:");
+			await store.recordCalls([
+				call({ digest: "c1", name: "read", argsDigest: "r", timestamp: at(0) }),
+				call({ digest: "c2", name: "read", argsDigest: "r", timestamp: at(1) }),
+				call({
+					digest: "v1",
+					argsDigest: "t",
+					verifierKind: "lint",
+					timestamp: at(2),
+				}),
+				call({ digest: "c3", name: "read", argsDigest: "r", timestamp: at(3) }),
+			]);
+
+			const repeats = await store.repeatedCalls({ retrieval: ["read"] });
+			expect(repeats[0]).toMatchObject({
+				repeated: 2,
+				rework: 1,
+				appraisal: 1,
+			});
+			await store.close();
+		});
+	});
 });

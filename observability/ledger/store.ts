@@ -121,6 +121,8 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 CREATE INDEX IF NOT EXISTS tool_calls_verifier ON tool_calls (verifier_kind);
 CREATE INDEX IF NOT EXISTS tool_calls_args ON tool_calls (session_id, args_digest);
 CREATE INDEX IF NOT EXISTS tool_calls_path ON tool_calls (path);
+CREATE INDEX IF NOT EXISTS tool_calls_session_verifier
+	ON tool_calls (session_id, timestamp) WHERE verifier_kind IS NOT NULL;
 CREATE TABLE IF NOT EXISTS dropped_calls (
 	digest TEXT PRIMARY KEY,
 	session_id TEXT NOT NULL,
@@ -412,21 +414,37 @@ class SqliteTurnStore implements TurnStore {
 			name: string;
 			repeated: number;
 			repeated_chars: number | null;
+			appraisal: number;
+			appraisal_chars: number | null;
 		}>(
 			`WITH ordered AS (
 				SELECT c.session_id, c.args_digest, c.name, c.path,
-					c.timestamp, c.result_chars,
+					c.timestamp, c.result_chars, c.verifier_kind,
 					LAG(c.timestamp) OVER (
 						PARTITION BY c.session_id, c.args_digest
 						ORDER BY c.timestamp, c.digest
 					) AS previous_at
 				FROM tool_calls AS c
 				WHERE ${retrieval.sql}
+			),
+			repeats AS (
+				SELECT o.session_id, o.args_digest, o.name, o.result_chars,
+					(o.verifier_kind IS NOT NULL OR EXISTS (
+						SELECT 1 FROM tool_calls AS v
+						WHERE v.session_id = o.session_id
+							AND v.verifier_kind IS NOT NULL
+							AND v.timestamp > o.previous_at
+							AND v.timestamp < o.timestamp
+					)) AS is_appraisal
+				FROM ordered AS o
+				WHERE o.previous_at IS NOT NULL AND NOT (${changed.sql})
 			)
 			SELECT args_digest, name, COUNT(*) AS repeated,
-				SUM(COALESCE(result_chars, 0)) AS repeated_chars
-			FROM ordered AS o
-			WHERE o.previous_at IS NOT NULL AND NOT (${changed.sql})
+				SUM(COALESCE(result_chars, 0)) AS repeated_chars,
+				SUM(is_appraisal) AS appraisal,
+				SUM(CASE WHEN is_appraisal THEN COALESCE(result_chars, 0) ELSE 0 END)
+					AS appraisal_chars
+			FROM repeats
 			GROUP BY session_id, args_digest
 			ORDER BY repeated_chars DESC`,
 			[...retrieval.params, ...changed.params],
@@ -437,6 +455,10 @@ class SqliteTurnStore implements TurnStore {
 			asked: row.repeated + 1,
 			repeated: row.repeated,
 			repeatedChars: row.repeated_chars ?? 0,
+			rework: row.repeated - row.appraisal,
+			reworkChars: (row.repeated_chars ?? 0) - (row.appraisal_chars ?? 0),
+			appraisal: row.appraisal,
+			appraisalChars: row.appraisal_chars ?? 0,
 		}));
 	}
 
