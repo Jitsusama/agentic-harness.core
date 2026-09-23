@@ -19,6 +19,13 @@ export interface TurnRecord {
 	readonly kind: TurnKind;
 	/** Resolved model id, or empty when the entry did not say. */
 	readonly model: string;
+	/**
+	 * The thinking level the turn ran at, as the log last set it before
+	 * the turn, or null when the log never said. Unknown is not a level:
+	 * guessing the harness default would put spend on a setting that may
+	 * not have been in force.
+	 */
+	readonly thinkingLevel: string | null;
 	readonly tokens: RunTokens;
 	/** Null when unmetered. Never coerced to zero. */
 	readonly cost: RunCost | null;

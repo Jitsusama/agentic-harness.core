@@ -11,6 +11,7 @@ function turn(overrides: Partial<TurnRecord> = {}): TurnRecord {
 		timestamp: "2026-09-21T17:50:00.000Z",
 		kind: "assistant",
 		model: "claude-opus-5",
+		thinkingLevel: null,
 		tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		cacheWrite1h: 0,

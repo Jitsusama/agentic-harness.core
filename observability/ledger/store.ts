@@ -42,7 +42,8 @@ export type CostDimension =
 	| "kind"
 	| "day"
 	| "repo"
-	| "quest";
+	| "quest"
+	| "thinking";
 
 /** A content-addressed store of billable turns. */
 export interface TurnStore {
@@ -62,6 +63,8 @@ export interface TurnStore {
 	paybackReplay(): Promise<PaybackReplay>;
 	total(): Promise<LedgerTotal>;
 	costBy(dimension: CostDimension): Promise<CostSlice[]>;
+	/** Every session the ledger holds, for another store to join to. */
+	sessions(): Promise<SessionRecord[]>;
 	close(): Promise<void>;
 }
 
@@ -148,6 +151,7 @@ const GROUP_BY: Record<CostDimension, string> = {
 	// that quietly excluded most of the money.
 	repo: "COALESCE(sessions.repo, '')",
 	quest: "COALESCE(sessions.quest, '')",
+	thinking: "COALESCE(turns.thinking_level, '')",
 };
 
 /**
@@ -159,7 +163,26 @@ export async function openTurnStore(dbPath: string): Promise<TurnStore> {
 	const db = await openDb(dbPath);
 	await db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
 	await db.exec(SCHEMA);
+	await migrate(db);
 	return new SqliteTurnStore(db);
+}
+
+/**
+ * Bring a ledger written at an older shape up to this one. A new ledger
+ * is created at the original shape and migrated like any other, so every
+ * test that opens a fresh store also exercises the path an existing file
+ * meets. Every step is additive, so nothing a ledger holds can be lost by
+ * opening it.
+ */
+async function migrate(db: Db): Promise<void> {
+	const columns = new Set(
+		(await db.all<{ name: string }>("PRAGMA table_info(turns)")).map(
+			(column) => column.name,
+		),
+	);
+	if (!columns.has("thinking_level")) {
+		await db.exec("ALTER TABLE turns ADD COLUMN thinking_level TEXT");
+	}
 }
 
 class SqliteTurnStore implements TurnStore {
@@ -198,6 +221,7 @@ class SqliteTurnStore implements TurnStore {
 				// Seen before, so not billed again, but the sighting is still
 				// recorded: deduplicating must not hide that it happened.
 				await this.sight(t);
+				await this.fillThinkingLevel(t);
 				continue;
 			}
 			inserted += 1;
@@ -207,8 +231,8 @@ class SqliteTurnStore implements TurnStore {
 					tokens_input, tokens_output, tokens_cache_read,
 					tokens_cache_write, tokens_total, cache_write_1h,
 					cost_input, cost_output, cost_cache_read, cost_cache_write,
-					cost_total, dropped_before, first_kept_entry_id
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					cost_total, dropped_before, first_kept_entry_id, thinking_level
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					t.digest,
 					t.entryId,
@@ -229,6 +253,7 @@ class SqliteTurnStore implements TurnStore {
 					t.cost?.total ?? null,
 					t.droppedBefore,
 					t.firstKeptEntryId,
+					t.thinkingLevel,
 				],
 			);
 			await this.sight(t);
@@ -658,8 +683,44 @@ class SqliteTurnStore implements TurnStore {
 		}));
 	}
 
+	async sessions(): Promise<SessionRecord[]> {
+		const rows = await this.db.all<{
+			session_id: string;
+			cwd: string | null;
+			repo: string | null;
+			quest: string | null;
+			first_seen: string | null;
+			last_seen: string | null;
+		}>(
+			`SELECT session_id, cwd, repo, quest, first_seen, last_seen
+			FROM sessions ORDER BY session_id`,
+		);
+		return rows.map((r) => ({
+			sessionId: r.session_id,
+			cwd: r.cwd,
+			repo: r.repo,
+			quest: r.quest,
+			firstSeen: r.first_seen,
+			lastSeen: r.last_seen,
+		}));
+	}
+
 	async close(): Promise<void> {
 		await this.db.close();
+	}
+
+	/**
+	 * Give a held turn the thinking level a later scan learned, when it
+	 * had none. This is how a ledger indexed before the column existed
+	 * gets it on the next rescan, without billing anything twice. A level
+	 * already known is left alone: the same entry cannot have run at two.
+	 */
+	private async fillThinkingLevel(t: TurnRecord): Promise<void> {
+		if (t.thinkingLevel === null) return;
+		await this.db.run(
+			"UPDATE turns SET thinking_level = ? WHERE digest = ? AND thinking_level IS NULL",
+			[t.thinkingLevel, t.digest],
+		);
 	}
 
 	private async sight(t: TurnRecord): Promise<void> {
