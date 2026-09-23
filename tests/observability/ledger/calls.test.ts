@@ -96,4 +96,64 @@ describe("tool calls in the store", () => {
 		expect(await store.repeatedCalls()).toEqual([]);
 		await store.close();
 	});
+
+	it("scopes repeats to the retrieval tools named", async () => {
+		const store = await openTurnStore(":memory:");
+		await store.recordCalls([
+			call({ digest: "c1", name: "read", argsDigest: "r" }),
+			call({ digest: "c2", name: "read", argsDigest: "r" }),
+			call({ digest: "c3", name: "tdd_loop", argsDigest: "green" }),
+			call({ digest: "c4", name: "tdd_loop", argsDigest: "green" }),
+		]);
+
+		const repeats = await store.repeatedCalls({ retrieval: ["read"] });
+		expect(repeats.map((r) => r.name)).toEqual(["read"]);
+		await store.close();
+	});
+
+	it("does not count a re-read after a write to the same file as a repeat", async () => {
+		// Re-reading unchanged bytes is waste; re-reading a file that was
+		// just edited is how the edit gets checked.
+		const store = await openTurnStore(":memory:");
+		await store.recordCalls([
+			call({
+				digest: "c1",
+				name: "read",
+				argsDigest: "r",
+				path: "/a",
+				timestamp: "2026-09-21T17:00:00.000Z",
+			}),
+			call({
+				digest: "w1",
+				name: "edit",
+				argsDigest: "e",
+				path: "/a",
+				timestamp: "2026-09-21T17:01:00.000Z",
+			}),
+			call({
+				digest: "c2",
+				name: "read",
+				argsDigest: "r",
+				path: "/a",
+				timestamp: "2026-09-21T17:02:00.000Z",
+			}),
+			call({
+				digest: "c3",
+				name: "read",
+				argsDigest: "r",
+				path: "/a",
+				resultChars: 40,
+				timestamp: "2026-09-21T17:03:00.000Z",
+			}),
+		]);
+
+		const repeats = await store.repeatedCalls({
+			retrieval: ["read"],
+			writers: ["edit"],
+		});
+		// Only the third read repeats unchanged bytes.
+		expect(repeats).toHaveLength(1);
+		expect(repeats[0]).toMatchObject({ repeated: 1, repeatedChars: 40 });
+		await store.close();
+	});
 });

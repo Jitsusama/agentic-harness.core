@@ -1,8 +1,9 @@
 import { type Db, openDb } from "../../internal/sqlite/db.js";
 import type {
+	CallScope,
 	DroppedCallRecord,
 	PaybackReplay,
-	Regret,
+	RegretReport,
 	RepeatedCall,
 	SessionRecord,
 	ToolCallRecord,
@@ -50,11 +51,11 @@ export interface TurnStore {
 	recordCalls(calls: readonly ToolCallRecord[]): Promise<RecordOutcome>;
 	queryCalls(): Promise<ToolCallRecord[]>;
 	/** Arguments asked more than once in one session, heaviest first. */
-	repeatedCalls(): Promise<RepeatedCall[]>;
+	repeatedCalls(scope?: CallScope): Promise<RepeatedCall[]>;
 	recordDropped(dropped: readonly DroppedCallRecord[]): Promise<RecordOutcome>;
 	queryDropped(): Promise<DroppedCallRecord[]>;
-	/** Dropped calls asked again after the drop, earliest re-ask first. */
-	regret(): Promise<Regret[]>;
+	/** Dropped calls asked again after the drop, with how many could have been. */
+	regret(scope?: CallScope): Promise<RegretReport>;
 	/** Pass, fail and unknown counts per verifier kind that ran at all. */
 	verifierOutcomes(): Promise<VerifierOutcome[]>;
 	/** How real compactions compare against the payback test. */
@@ -365,27 +366,51 @@ class SqliteTurnStore implements TurnStore {
 	 * session has none of the first one's context: asking again is the
 	 * only way it could know. Only repetition within a session is a
 	 * question whose answer was already there.
+	 *
+	 * Each call is compared with the previous asking of the same
+	 * arguments, and counts as a repeat only when no writer touched its
+	 * file in between: re-reading unchanged bytes is waste, re-reading a
+	 * file that was just edited is how the edit gets checked. `asked` is
+	 * therefore the repeats plus the asking they repeated, not every call
+	 * ever made with these arguments.
 	 */
-	async repeatedCalls(): Promise<RepeatedCall[]> {
+	async repeatedCalls(scope: CallScope = {}): Promise<RepeatedCall[]> {
+		const retrieval = inList("c.name", scope.retrieval);
+		const changed = writtenBetween(
+			"o",
+			"o.previous_at",
+			"o.timestamp",
+			scope.writers,
+		);
 		const rows = await this.db.all<{
 			args_digest: string;
 			name: string;
-			asked: number;
+			repeated: number;
 			repeated_chars: number | null;
 		}>(
-			`SELECT args_digest, name, COUNT(*) AS asked,
-				SUM(COALESCE(result_chars, 0))
-					- MAX(COALESCE(result_chars, 0)) AS repeated_chars
-			FROM tool_calls
+			`WITH ordered AS (
+				SELECT c.session_id, c.args_digest, c.name, c.path,
+					c.timestamp, c.result_chars,
+					LAG(c.timestamp) OVER (
+						PARTITION BY c.session_id, c.args_digest
+						ORDER BY c.timestamp, c.digest
+					) AS previous_at
+				FROM tool_calls AS c
+				WHERE ${retrieval.sql}
+			)
+			SELECT args_digest, name, COUNT(*) AS repeated,
+				SUM(COALESCE(result_chars, 0)) AS repeated_chars
+			FROM ordered AS o
+			WHERE o.previous_at IS NOT NULL AND NOT (${changed.sql})
 			GROUP BY session_id, args_digest
-			HAVING asked > 1
 			ORDER BY repeated_chars DESC`,
+			[...retrieval.params, ...changed.params],
 		);
 		return rows.map((row) => ({
 			argsDigest: row.args_digest,
 			name: row.name,
-			asked: row.asked,
-			repeated: row.asked - 1,
+			asked: row.repeated + 1,
+			repeated: row.repeated,
 			repeatedChars: row.repeated_chars ?? 0,
 		}));
 	}
@@ -442,8 +467,32 @@ class SqliteTurnStore implements TurnStore {
 	 * to a later call that came after the drop rather than before it: a
 	 * repeat that predates the drop is an ordinary repeat, not a case of
 	 * the context having to re-fetch what it lost.
+	 *
+	 * One row per dropped call, at its first re-ask. Joining every later
+	 * asking as its own row once turned a single call re-issued 79,600
+	 * times into 79,600 regrets. A re-ask after a writer touched the
+	 * dropped call's file fetched something new and does not count, and
+	 * neither does any re-ask after that, since each of them reads the
+	 * changed file rather than the one the drop discarded.
 	 */
-	async regret(): Promise<Regret[]> {
+	async regret(scope: CallScope = {}): Promise<RegretReport> {
+		const retrieval = inList("dropped.name", scope.retrieval);
+		const [counted] = await this.db.all<{ in_scope: number }>(
+			`SELECT COUNT(*) AS in_scope
+			FROM dropped_calls
+			JOIN tool_calls AS dropped ON dropped.digest = dropped_calls.digest
+			WHERE ${retrieval.sql}`,
+			retrieval.params,
+		);
+
+		const changed = writtenBetween(
+			"dropped",
+			"dropped.timestamp",
+			"re_ask.timestamp",
+			scope.writers,
+		);
+		// SQLite takes a bare column alongside MIN from the row MIN chose,
+		// which is what makes result_chars the first re-ask's own size.
 		const rows = await this.db.all<{
 			name: string;
 			args_digest: string;
@@ -456,7 +505,7 @@ class SqliteTurnStore implements TurnStore {
 				dropped.name AS name,
 				dropped.args_digest AS args_digest,
 				dropped_calls.dropped_at_timestamp AS dropped_at_timestamp,
-				re_ask.timestamp AS re_asked_at_timestamp,
+				MIN(re_ask.timestamp) AS re_asked_at_timestamp,
 				re_ask.result_chars AS result_chars
 			FROM dropped_calls
 			JOIN tool_calls AS dropped
@@ -465,16 +514,22 @@ class SqliteTurnStore implements TurnStore {
 				ON re_ask.session_id = dropped_calls.session_id
 				AND re_ask.args_digest = dropped.args_digest
 				AND re_ask.timestamp > dropped_calls.dropped_at_timestamp
-			ORDER BY re_ask.timestamp ASC`,
+			WHERE ${retrieval.sql} AND NOT (${changed.sql})
+			GROUP BY dropped_calls.digest
+			ORDER BY re_asked_at_timestamp ASC`,
+			[...retrieval.params, ...changed.params],
 		);
-		return rows.map((row) => ({
-			name: row.name,
-			argsDigest: row.args_digest,
-			sessionId: row.session_id,
-			droppedAtTimestamp: row.dropped_at_timestamp,
-			reAskedAtTimestamp: row.re_asked_at_timestamp,
-			resultChars: row.result_chars,
-		}));
+		return {
+			inScope: counted?.in_scope ?? 0,
+			reAsked: rows.map((row) => ({
+				name: row.name,
+				argsDigest: row.args_digest,
+				sessionId: row.session_id,
+				droppedAtTimestamp: row.dropped_at_timestamp,
+				reAskedAtTimestamp: row.re_asked_at_timestamp,
+				resultChars: row.result_chars,
+			})),
+		};
 	}
 
 	/**
@@ -646,6 +701,58 @@ class SqliteTurnStore implements TurnStore {
 		}
 		return found;
 	}
+}
+
+/** A SQL fragment and the values its placeholders bind, in order. */
+interface Clause {
+	readonly sql: string;
+	readonly params: readonly unknown[];
+}
+
+/**
+ * `column IN (...)` over a caller's list, or a clause that holds for
+ * every row when there is no list. An empty list means the caller named
+ * nothing in scope, which is answered with nothing rather than
+ * silently widened to everything.
+ */
+function inList(column: string, values: readonly string[] | undefined): Clause {
+	if (values === undefined) return { sql: "1 = 1", params: [] };
+	if (values.length === 0) return { sql: "1 = 0", params: [] };
+	return {
+		sql: `${column} IN (${values.map(() => "?").join(",")})`,
+		params: values,
+	};
+}
+
+/**
+ * Whether a writer touched the file a call declares, strictly between
+ * two moments in the same session. Holds for no row when no writers are
+ * named or the call declares no file, since then nothing can have
+ * changed underneath it that the ledger would know about.
+ *
+ * Column expressions are fixed fragments from this module, never caller
+ * input; only the writer names are bound.
+ */
+function writtenBetween(
+	call: string,
+	after: string,
+	before: string,
+	writers: readonly string[] | undefined,
+): Clause {
+	if (writers === undefined || writers.length === 0) {
+		return { sql: "1 = 0", params: [] };
+	}
+	return {
+		sql: `${call}.path IS NOT NULL AND EXISTS (
+			SELECT 1 FROM tool_calls AS written
+			WHERE written.session_id = ${call}.session_id
+				AND written.path = ${call}.path
+				AND written.name IN (${writers.map(() => "?").join(",")})
+				AND written.timestamp > ${after}
+				AND written.timestamp < ${before}
+		)`,
+		params: writers,
+	};
 }
 
 interface CallRow {

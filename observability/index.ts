@@ -17,6 +17,7 @@
  */
 
 export {
+	type CallScope,
 	type CostDimension,
 	type CostSlice,
 	type DroppedCallRecord,
@@ -25,6 +26,7 @@ export {
 	type PaybackReplay,
 	type RecordOutcome,
 	type Regret,
+	type RegretReport,
 	type RepeatedCall,
 	type SessionRecord,
 	type ToolCallRecord,

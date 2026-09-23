@@ -125,9 +125,32 @@ export interface DroppedCallRecord {
 }
 
 /**
+ * Which calls a repeat or regret query is about, and what counts as a
+ * file changing underneath them. Both lists are the caller's, because
+ * which tools retrieve and which ones write is a fact about a harness's
+ * tool set, not about the ledger.
+ */
+export interface CallScope {
+	/**
+	 * Tools whose result is information, so asking again means the
+	 * information was needed again. Absent means every tool, which also
+	 * counts re-issued actions and so overstates both measures.
+	 */
+	readonly retrieval?: readonly string[];
+	/**
+	 * Tools that change the file a call declares. A read repeated after one
+	 * of these touched the same path fetched something new, so it is
+	 * neither a repeat nor a regret. Absent means no call is treated as a
+	 * write.
+	 */
+	readonly writers?: readonly string[];
+}
+
+/**
  * A dropped call that was asked again afterward: the earlier answer was
  * discarded and the same question was put a second time. No claim about
  * whether the second asking was necessary, only that it happened.
+ * Counted once per dropped call, at its first re-ask.
  */
 export interface Regret {
 	readonly name: string;
@@ -136,6 +159,17 @@ export interface Regret {
 	readonly droppedAtTimestamp: string;
 	readonly reAskedAtTimestamp: string;
 	readonly resultChars: number | null;
+}
+
+/**
+ * Regret with its denominator, since a count of re-asks means nothing
+ * without how many drops it could have been out of.
+ */
+export interface RegretReport {
+	/** Dropped calls within the scope asked about. */
+	readonly inScope: number;
+	/** Those of them asked again after the drop, earliest re-ask first. */
+	readonly reAsked: Regret[];
 }
 
 /**
