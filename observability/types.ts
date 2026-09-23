@@ -70,12 +70,14 @@ export interface RunRecord {
 	 */
 	readonly thinkingLevel: string | null;
 	/**
-	 * The subagent process's own pi session id, as the child announced
-	 * it, which is the id billing rows carry. Distinct from
-	 * {@link sessionId}, the parent that dispatched it. Null when the
-	 * run had no child process or the child died before announcing one.
+	 * Every pi session the run's own processes announced, in order,
+	 * which are the ids billing rows carry. Usually one; a stopped
+	 * reviewer asked for its findings is a second process with a second
+	 * session. Distinct from {@link sessionId}, the parent that
+	 * dispatched the run. Empty when the run had no child process, as an
+	 * in-process run does not; null when nobody knows.
 	 */
-	readonly subagentSessionId: string | null;
+	readonly subagentSessionIds: readonly string[] | null;
 	/**
 	 * The parent session that dispatched the run, the directory it was
 	 * working in and the repo that directory belongs to. Stamped by the

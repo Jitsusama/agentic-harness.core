@@ -19,7 +19,7 @@ function input(overrides: Partial<RunRecordInput> = {}): RunRecordInput {
 		persona: "correctness",
 		thinkingLevel: null,
 		startedAt: 1_700_000_000_000,
-		result: { exitCode: 0, sessionId: null, warnings: [], usage: USAGE },
+		result: { exitCode: 0, sessionIds: null, warnings: [], usage: USAGE },
 		...overrides,
 	};
 }
@@ -27,7 +27,7 @@ function input(overrides: Partial<RunRecordInput> = {}): RunRecordInput {
 describe("a run that reported no usage", () => {
 	it("still gets a record, so a round killed before billing is not invisible", () => {
 		const record = runRecordFrom(
-			input({ result: { exitCode: 1, sessionId: null, warnings: [] } }),
+			input({ result: { exitCode: 1, sessionIds: null, warnings: [] } }),
 		);
 
 		expect(record.runId).toBe("council-1");
@@ -39,7 +39,7 @@ describe("a run that reported no usage", () => {
 		// none was free: each died before it could report. Recording them
 		// at $0 made them indistinguishable from a run that cost nothing.
 		const record = runRecordFrom(
-			input({ result: { exitCode: 1, sessionId: null, warnings: [] } }),
+			input({ result: { exitCode: 1, sessionIds: null, warnings: [] } }),
 		);
 
 		expect(record.cost).toBeNull();
@@ -50,7 +50,7 @@ describe("a run that reported no usage", () => {
 		const store = await openRunStore(":memory:");
 		await store.recordRun(
 			runRecordFrom(
-				input({ result: { exitCode: 1, sessionId: null, warnings: [] } }),
+				input({ result: { exitCode: 1, sessionIds: null, warnings: [] } }),
 			),
 		);
 
@@ -66,7 +66,7 @@ describe("a run that reported no usage", () => {
 			runRecordFrom(
 				input({
 					subagentId: "b",
-					result: { exitCode: 1, sessionId: null, warnings: [] },
+					result: { exitCode: 1, sessionIds: null, warnings: [] },
 				}),
 			),
 		);

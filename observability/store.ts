@@ -99,7 +99,7 @@ interface RunRow {
 	repo: string | null;
 	ended_at: number | null;
 	thinking_level: string | null;
-	subagent_session_id: string | null;
+	subagent_session_ids: string | null;
 }
 
 /**
@@ -192,7 +192,8 @@ const ATTRIBUTION_COLUMNS: ReadonlyArray<readonly [string, string]> = [
  */
 const LAUNCH_COLUMNS: ReadonlyArray<readonly [string, string]> = [
 	["thinking_level", "TEXT"],
-	["subagent_session_id", "TEXT"],
+	// A JSON array of session ids; null when not known.
+	["subagent_session_ids", "TEXT"],
 ];
 
 class SqliteRunStore implements RunStore {
@@ -206,7 +207,7 @@ class SqliteRunStore implements RunStore {
 				tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, tokens_total,
 				cost_input, cost_output, cost_cache_read, cost_cache_write, cost_total,
 				started_at, metered, session_id, cwd, repo, ended_at,
-				thinking_level, subagent_session_id
+				thinking_level, subagent_session_ids
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (run_id, subagent_id) DO UPDATE SET
 				kind = excluded.kind, model = excluded.model,
@@ -228,7 +229,7 @@ class SqliteRunStore implements RunStore {
 				session_id = excluded.session_id, cwd = excluded.cwd,
 				repo = excluded.repo, ended_at = excluded.ended_at,
 				thinking_level = excluded.thinking_level,
-				subagent_session_id = excluded.subagent_session_id`,
+				subagent_session_ids = excluded.subagent_session_ids`,
 			[
 				record.runId,
 				record.subagentId,
@@ -259,7 +260,9 @@ class SqliteRunStore implements RunStore {
 				record.repo ?? null,
 				record.endedAt ?? null,
 				record.thinkingLevel ?? null,
-				record.subagentSessionId ?? null,
+				record.subagentSessionIds
+					? JSON.stringify(record.subagentSessionIds)
+					: null,
 			],
 		);
 	}
@@ -408,6 +411,26 @@ interface SummaryRow {
 	cost_total: number;
 }
 
+/**
+ * Read the stored session list back. Anything that is not an array of
+ * strings reads as unknown rather than as a partial list, since a list
+ * with a session missing would join a job to less of its bill without
+ * saying so.
+ */
+function sessionIdsFrom(stored: string | null): readonly string[] | null {
+	if (stored === null) return null;
+	try {
+		const parsed: unknown = JSON.parse(stored);
+		return Array.isArray(parsed) &&
+			parsed.every((id): id is string => typeof id === "string")
+			? parsed
+			: null;
+	} catch {
+		// Not JSON, so not something this store wrote: unknown.
+		return null;
+	}
+}
+
 function rowToRecord(row: RunRow): RunRecord {
 	return {
 		runId: row.run_id,
@@ -445,6 +468,6 @@ function rowToRecord(row: RunRow): RunRecord {
 		repo: row.repo ?? null,
 		endedAt: row.ended_at ?? null,
 		thinkingLevel: row.thinking_level ?? null,
-		subagentSessionId: row.subagent_session_id ?? null,
+		subagentSessionIds: sessionIdsFrom(row.subagent_session_ids),
 	};
 }

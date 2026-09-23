@@ -22,10 +22,10 @@ export interface RunRecordInput {
 	readonly result: {
 		readonly exitCode: number;
 		/**
-		 * The session id the child process announced, null when there was
-		 * no child or it never announced one.
+		 * The session ids the run's child processes announced, in order.
+		 * Empty when there was no child process, null when not known.
 		 */
-		readonly sessionId: string | null;
+		readonly sessionIds: readonly string[] | null;
 		readonly warnings: readonly string[];
 		readonly usage?: { readonly tokens: RunTokens; readonly cost: RunCost };
 		readonly verification?: {
@@ -73,7 +73,7 @@ export function runRecordFrom(input: RunRecordInput): RunRecord {
 		cost: result.usage?.cost ?? null,
 		startedAt: input.startedAt,
 		thinkingLevel: input.thinkingLevel,
-		subagentSessionId: result.sessionId,
+		subagentSessionIds: result.sessionIds,
 	};
 }
 

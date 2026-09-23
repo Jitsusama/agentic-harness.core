@@ -13,7 +13,7 @@ describe("runRecordFrom", () => {
 			startedAt: 1_700_000_000_000,
 			result: {
 				exitCode: 0,
-				sessionId: null,
+				sessionIds: null,
 				warnings: ["w1", "w2"],
 				usage: {
 					tokens: {
@@ -54,14 +54,14 @@ describe("runRecordFrom", () => {
 			result: {
 				exitCode: 0,
 				warnings: [],
-				sessionId: "01a0cff2-4244-75ad-b91b-7bdc1bc970b7",
+				sessionIds: ["01a0cff2-4244-75ad-b91b-7bdc1bc970b7"],
 			},
 		});
 
 		expect(record.thinkingLevel).toBe("medium");
-		expect(record.subagentSessionId).toBe(
+		expect(record.subagentSessionIds).toEqual([
 			"01a0cff2-4244-75ad-b91b-7bdc1bc970b7",
-		);
+		]);
 	});
 
 	it("derives retries-to-valid from the verify attempt count", () => {
@@ -78,7 +78,7 @@ describe("runRecordFrom", () => {
 			...base,
 			result: {
 				exitCode: 0,
-				sessionId: null,
+				sessionIds: null,
 				warnings: [],
 				verification: { ok: true, attempts: 1 },
 			},
@@ -89,7 +89,7 @@ describe("runRecordFrom", () => {
 			...base,
 			result: {
 				exitCode: 0,
-				sessionId: null,
+				sessionIds: null,
 				warnings: [],
 				verification: { ok: true, attempts: 3 },
 			},
@@ -108,7 +108,7 @@ describe("runRecordFrom", () => {
 			startedAt: 0,
 			result: {
 				exitCode: 1,
-				sessionId: null,
+				sessionIds: null,
 				warnings: [],
 				verification: { ok: false },
 			},
@@ -127,7 +127,7 @@ describe("runRecordFrom", () => {
 			persona: "s",
 			thinkingLevel: null,
 			startedAt: 0,
-			result: { exitCode: 0, sessionId: null, warnings: [] },
+			result: { exitCode: 0, sessionIds: null, warnings: [] },
 		});
 		expect(noVerify.verifyOutcome).toBe("none");
 	});

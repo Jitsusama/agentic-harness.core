@@ -16,7 +16,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
 		cost: { input: 0.1, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.2 },
 		startedAt: 1_700_000_000_000,
 		thinkingLevel: null,
-		subagentSessionId: null,
+		subagentSessionIds: null,
 		...overrides,
 	};
 }
@@ -56,23 +56,42 @@ describe("run attribution", () => {
 });
 
 describe("how a run was launched", () => {
-	it("records the thinking level and the subagent's own session", async () => {
+	it("records the thinking level and every session the subagent's processes announced", async () => {
 		// Billing rows carry the child process's pi session id, not the
 		// parent's, so without it a job can only be matched to its bill by
 		// summing tokens, which misses whenever one side has a call the
 		// other lacks. The thinking level is the other half of what a job
-		// cost: 30 percent of fleet jobs launch at xhigh.
+		// cost: 30 percent of fleet jobs launch at xhigh. A job can be more
+		// than one process, since a stopped reviewer is asked for its
+		// findings by a second one, so it can hold more than one session.
 		const store = await openRunStore(":memory:");
 		await store.recordRun(
 			run({
 				thinkingLevel: "xhigh",
-				subagentSessionId: "01a0cff2-4244-75ad-b91b-7bdc1bc970b7",
+				subagentSessionIds: [
+					"01a0cff2-4244-75ad-b91b-7bdc1bc970b7",
+					"01a0cff9-7f1e-7c2a-9d3e-2a1b8e0c4f51",
+				],
 			}),
 		);
 
 		const [row] = await store.queryRuns();
 		expect(row.thinkingLevel).toBe("xhigh");
-		expect(row.subagentSessionId).toBe("01a0cff2-4244-75ad-b91b-7bdc1bc970b7");
+		expect(row.subagentSessionIds).toEqual([
+			"01a0cff2-4244-75ad-b91b-7bdc1bc970b7",
+			"01a0cff9-7f1e-7c2a-9d3e-2a1b8e0c4f51",
+		]);
+		await store.close();
+	});
+
+	it("tells a run with no child process apart from one nobody knew", async () => {
+		// An in-process run, like the advisor, had no child to announce a
+		// session. That is a fact, not a gap, and reads differently.
+		const store = await openRunStore(":memory:");
+		await store.recordRun(run({ subagentSessionIds: [] }));
+
+		const [row] = await store.queryRuns();
+		expect(row.subagentSessionIds).toEqual([]);
 		await store.close();
 	});
 
@@ -82,7 +101,7 @@ describe("how a run was launched", () => {
 
 		const [row] = await store.queryRuns();
 		expect(row.thinkingLevel).toBeNull();
-		expect(row.subagentSessionId).toBeNull();
+		expect(row.subagentSessionIds).toBeNull();
 		await store.close();
 	});
 });

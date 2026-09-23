@@ -28,7 +28,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
 		},
 		startedAt: 1_700_000_000_000,
 		thinkingLevel: null,
-		subagentSessionId: null,
+		subagentSessionIds: null,
 		...overrides,
 	};
 }
