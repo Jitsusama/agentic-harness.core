@@ -3,8 +3,8 @@
  */
 
 import type { OAuth2Client } from "google-auth-library";
-import { google } from "googleapis";
 import type { EmailMessage, EmailMessageFull } from "../types.js";
+import { google } from "./client.js";
 
 /**
  * Search emails using Gmail query syntax.

@@ -14,8 +14,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Defuddle } from "defuddle/node";
-import { JSDOM, VirtualConsole } from "jsdom";
+import type { VirtualConsole } from "jsdom";
 import type { Page } from "puppeteer-core";
 import { isPidAlive, newPage } from "./browser.js";
 import { injectCookies, isSetUp } from "./cookies/index.js";
@@ -247,8 +246,8 @@ function cleanText(text: string): string {
  * Create a jsdom VirtualConsole that suppresses CSS parse warnings
  * without affecting process.stderr globally.
  */
-function quietVirtualConsole() {
-	const vc = new VirtualConsole();
+function quietVirtualConsole(Console: typeof VirtualConsole) {
+	const vc = new Console();
 	vc.on("error", (msg: string) => {
 		if (!msg.includes("Could not parse CSS stylesheet")) {
 			console.error(msg);
@@ -269,7 +268,14 @@ async function extractArticle(
 	url: string,
 ): Promise<Article | null> {
 	try {
-		const dom = new JSDOM(html, { url, virtualConsole: quietVirtualConsole() });
+		// jsdom and defuddle load on the first page read rather than at
+		// import: jsdom alone is a full browser DOM, over 100 MB.
+		const { JSDOM, VirtualConsole } = await import("jsdom");
+		const { Defuddle } = await import("defuddle/node");
+		const dom = new JSDOM(html, {
+			url,
+			virtualConsole: quietVirtualConsole(VirtualConsole),
+		});
 		const result = await Defuddle(dom.window.document, url, {
 			markdown: true,
 			useAsync: false,

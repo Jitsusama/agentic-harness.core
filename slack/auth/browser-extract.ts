@@ -12,7 +12,6 @@
  */
 
 import * as fs from "node:fs";
-import puppeteer from "puppeteer-core";
 
 /**
  * Default Slack URL to navigate to: the dedicated sign-in entry
@@ -94,6 +93,9 @@ export async function extractFromBrowser(
 	onStep?: (message: string) => void,
 ): Promise<BrowserCredentials> {
 	const chromePath = findChrome();
+	// Loaded here rather than at import, since this runs once per
+	// Slack setup and the module is imported on every start.
+	const { default: puppeteer } = await import("puppeteer-core");
 	const browser = await puppeteer.launch({
 		executablePath: chromePath,
 		headless: false,

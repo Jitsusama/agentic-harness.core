@@ -3,13 +3,13 @@
  */
 
 import type { OAuth2Client } from "google-auth-library";
-import { google } from "googleapis";
 import type {
 	BusyPeriod,
 	CalendarEvent,
 	CalendarFreeBusy,
 	FreeBusyResult,
 } from "../types.js";
+import { google } from "./client.js";
 
 /**
  * List calendar events in a date range.
