@@ -12,8 +12,10 @@
  * what it consolidated.
  */
 
+import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { withFileLock } from "../../internal/file-lock.js";
 import type { ChangeRef } from "../change.js";
 import { changeKey } from "../keys.js";
 import type { AskRound, AskRun } from "./run.js";
@@ -153,16 +155,34 @@ export function createRunStore(root: string): RunStore {
 		// whose whole premise is that the session may not survive it,
 		// so the window stopped being theoretical. A rename within one
 		// directory is atomic: a reader sees the old ledger or the new
-		// one.
-		const pending = `${path}.${process.pid}.tmp`;
+		// one. Named per write, not per process: two writes in one
+		// process sharing a name tore the file, the shorter write landing
+		// over the start of the longer.
+		const pending = `${path}.${process.pid}.${randomUUID()}.tmp`;
 		await writeFile(pending, JSON.stringify(ledger, null, 2), "utf8");
 		await rename(pending, path);
 	}
 
+	/**
+	 * Read, change and write one change's ledger as a single step. Every
+	 * write is a whole ledger built from the one read before it, so two
+	 * of these at once, from parallel tool calls or two sessions on one
+	 * change, would each lay its version over the other's and drop a
+	 * round without an error.
+	 */
+	async function mutate(
+		change: ChangeRef,
+		next: (ledger: Ledger) => Ledger,
+	): Promise<void> {
+		await mkdir(root, { recursive: true });
+		await withFileLock(join(root, fileFor(change)), async () => {
+			await write(change, next(await read(change)));
+		});
+	}
+
 	return {
 		async record(change, run) {
-			const ledger = await read(change);
-			await write(change, { runs: [...ledger.runs, run] });
+			await mutate(change, (ledger) => ({ runs: [...ledger.runs, run] }));
 		},
 
 		async list(change) {
@@ -263,27 +283,29 @@ export function createRunStore(root: string): RunStore {
 		},
 
 		async keep(change, run) {
-			const ledger = await read(change);
-			const at = ledger.runs.findIndex((held) => held.id === run.id);
-			await write(change, {
-				runs:
-					at === -1
-						? [...ledger.runs, run]
-						: ledger.runs.map((held, index) => (index === at ? run : held)),
+			await mutate(change, (ledger) => {
+				const at = ledger.runs.findIndex((held) => held.id === run.id);
+				return {
+					runs:
+						at === -1
+							? [...ledger.runs, run]
+							: ledger.runs.map((held, index) => (index === at ? run : held)),
+				};
 			});
 		},
 		async replace(change, run) {
-			const ledger = await read(change);
-			const at = ledger.runs.findIndex((held) => held.id === run.id);
-			if (at === -1) {
-				// Adding it silently would make a retry look like it
-				// patched something when it invented a round instead.
-				throw new Error(
-					`No run "${run.id}" is held against this change, so there is nothing to replace. Record it first, or check the id.`,
-				);
-			}
-			await write(change, {
-				runs: ledger.runs.map((held, index) => (index === at ? run : held)),
+			await mutate(change, (ledger) => {
+				const at = ledger.runs.findIndex((held) => held.id === run.id);
+				if (at === -1) {
+					// Adding it silently would make a retry look like it
+					// patched something when it invented a round instead.
+					throw new Error(
+						`No run "${run.id}" is held against this change, so there is nothing to replace. Record it first, or check the id.`,
+					);
+				}
+				return {
+					runs: ledger.runs.map((held, index) => (index === at ? run : held)),
+				};
 			});
 		},
 	};
