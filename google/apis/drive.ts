@@ -3,8 +3,8 @@
  */
 
 import type { OAuth2Client } from "google-auth-library";
-import { google } from "googleapis";
 import type { DriveFile } from "../types.js";
+import { google } from "./client.js";
 
 /**
  * List Drive files with optional filtering.

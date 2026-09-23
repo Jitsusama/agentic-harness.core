@@ -8,7 +8,9 @@
  * piece of state has one keeper.
  */
 
-import { KnownDevices } from "puppeteer-core";
+// The catalogue's own module, rather than puppeteer's root, which
+// would load all of puppeteer to read one table.
+import { KnownDevices } from "puppeteer-core/internal/common/Device.js";
 import { deviceEmulation, noSuchDevice } from "../environment/devices.js";
 import {
 	type Divergence,

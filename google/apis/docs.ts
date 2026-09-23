@@ -3,8 +3,8 @@
  */
 
 import type { OAuth2Client } from "google-auth-library";
-import { google } from "googleapis";
 import type { DocumentComment } from "../types.js";
+import { google } from "./client.js";
 
 /** A single tab within a Google Doc. */
 export interface DocTab {

@@ -18,12 +18,17 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { clearTimeout, setTimeout } from "node:timers";
-import puppeteer, {
-	type Browser,
-	type BrowserContext,
-	type Page,
-} from "puppeteer-core";
+import type { Browser, BrowserContext, Page } from "puppeteer-core";
 import { processGlobal } from "../internal/process-global.js";
+
+/**
+ * puppeteer, loaded when a browser is first launched or joined rather
+ * than whenever this module is imported, since most sessions never
+ * open one.
+ */
+async function puppeteer() {
+	return (await import("puppeteer-core")).default;
+}
 
 /** How many times to try launching Chrome before giving up. */
 const LAUNCH_ATTEMPTS = 3;
@@ -632,7 +637,7 @@ async function launchOnce(executablePath: string): Promise<Browser> {
 	// prior attempt cannot poison this one.
 	fs.rmSync(profileDir, { recursive: true, force: true });
 	fs.mkdirSync(profileDir, { recursive: true });
-	const browser = await puppeteer.launch({
+	const browser = await (await puppeteer()).launch({
 		executablePath,
 		headless: true,
 		userDataDir: profileDir,
@@ -716,7 +721,7 @@ export async function connectShared(): Promise<Browser | undefined> {
 		const owner = readOwnerRecord(dir);
 		if (!owner?.browserWSEndpoint || !isPidAlive(owner.ownerPid)) continue;
 		try {
-			return await puppeteer.connect({
+			return await (await puppeteer()).connect({
 				browserWSEndpoint: owner.browserWSEndpoint,
 			});
 		} catch {
