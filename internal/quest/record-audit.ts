@@ -87,7 +87,7 @@ export function auditQuestRecord(questDir: string): RecordAudit {
 					break;
 				case "attachment": {
 					const problem = attachmentProblem(
-						attachmentFile(path, place.rel, stats),
+						attachmentFileAt(path, place.rel, stats),
 					);
 					if (problem) problems.push({ rel: place.rel, problem });
 					else if (stats.isDirectory()) walk(path);
@@ -120,11 +120,16 @@ export function isRecordSound(audit: RecordAudit): boolean {
 	);
 }
 
-/** What the attachment rules need to know about one path. */
-function attachmentFile(
+/**
+ * What the attachment rules need to know about one path on disk, named
+ * by `rel` as it would sit in the record. The migration asks this of a
+ * file before it moves, so it is judged the same way the audit would
+ * judge it once it lands.
+ */
+export function attachmentFileAt(
 	path: string,
 	rel: string,
-	stats: Stats,
+	stats: Stats = lstatSync(path),
 ): AttachmentFile {
 	const kind = stats.isSymbolicLink()
 		? "symlink"

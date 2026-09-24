@@ -8,7 +8,9 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { attachmentProblem } from "../../../internal/quest/record.js";
 import {
+	attachmentFileAt,
 	auditQuestRecord,
 	isRecordSound,
 } from "../../../internal/quest/record-audit.js";
@@ -98,5 +100,18 @@ describe("auditQuestRecord", () => {
 		put("plans/PLAN-20260924-RUE4Q4.md", "See `attachments/runs/`.\n");
 		put("attachments/lonely.md");
 		expect(isRecordSound(auditQuestRecord(questDir))).toBe(true);
+	});
+});
+
+describe("attachmentFileAt", () => {
+	it("reads a file the way the audit judges it, wherever it sits", () => {
+		put("evidence/blob", new Uint8Array([1, 0, 2]));
+		put("evidence/notes.md");
+		symlinkSync("/etc/hosts", join(questDir, "evidence", "hosts"));
+		const problem = (rel: string) =>
+			attachmentProblem(attachmentFileAt(join(questDir, rel), rel))?.reason;
+		expect(problem("evidence/blob")).toBe("binary");
+		expect(problem("evidence/notes.md")).toBeUndefined();
+		expect(problem("evidence/hosts")).toBe("not-a-file");
 	});
 });
