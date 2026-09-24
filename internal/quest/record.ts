@@ -13,7 +13,7 @@
  * change here needs the same change there.
  */
 
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { isId, prefixOf } from "./id.js";
 
 /** The folders a quest's documents live in, one per kind. */
@@ -234,6 +234,106 @@ export function attachmentProblem(
 		return { reason: "binary", detail: "binary, neither text nor an image" };
 	}
 	return overLimit(file.size, ATTACHMENT_LIMITS.textBytes, "text");
+}
+
+/** Which documents cite each attachment, and the links that lead nowhere. */
+export interface AttachmentCitations {
+	/** Each cited attachment's quest-relative path, and who cites it. */
+	readonly cited: Map<string, string[]>;
+	/** Links into `attachments/` that name no attachment, as written. */
+	readonly broken: { document: string; target: string }[];
+}
+
+/** A markdown link or image target, inline or as a reference definition. */
+const LINK_TARGET =
+	/\]\(\s*(<[^>\n]+>|[^)\s]+)|^ {0,3}\[[^\]\n]+\]:[ \t]*(<[^>\n]+>|\S+)/gm;
+
+/** Any path-like run of text that goes through an `attachments/` folder. */
+const MENTION = new RegExp(
+	`[^\\s\`'"()<>\\[\\]|,;]*${ATTACHMENTS_FOLDER}/[^\\s\`'"()<>\\[\\]|,;]*`,
+	"g",
+);
+
+const QUEST_ID = /QEST-\d{8}-[0-9A-Z]{6}/g;
+
+/**
+ * Which of a quest's documents cite each of its attachments.
+ *
+ * Documents live in the quest folder or one level down, so any mention
+ * of an attachment runs through `attachments/`, whichever way it is
+ * written: a link, an image, a reference definition, a code span, or a
+ * path in prose or a code block. A mention of a folder cites everything
+ * in it, and a glob cites the folder it starts in. A mention that names
+ * another quest's folder is that quest's business.
+ *
+ * Only a link can be broken. Prose often names a path that does not exist
+ * yet ("put the chart in attachments/cost.png"), while a link that goes
+ * nowhere is a record that lost its attachment.
+ */
+export function attachmentCitations(
+	quest: string,
+	documents: readonly { rel: string; text: string }[],
+	attachments: readonly string[],
+): AttachmentCitations {
+	const cited = new Map<string, string[]>();
+	const broken: { document: string; target: string }[] = [];
+	const credit = (document: string, mention: string): boolean => {
+		const key = attachmentKey(quest, mention);
+		if (key === undefined) return true;
+		const matches = attachments.filter(
+			(attachment) => attachment === key || attachment.startsWith(`${key}/`),
+		);
+		for (const attachment of matches) {
+			const citers = cited.get(attachment) ?? [];
+			if (!citers.includes(document)) citers.push(document);
+			cited.set(attachment, citers);
+		}
+		return matches.length > 0;
+	};
+
+	for (const { rel, text } of documents) {
+		for (const match of text.matchAll(LINK_TARGET)) {
+			const written = (match[1] ?? match[2] ?? "").replace(/^<|>$/g, "");
+			const target = decoded(written.replace(/[#?].*$/, ""));
+			if (!target.includes(`${ATTACHMENTS_FOLDER}/`)) continue;
+			if (!credit(rel, target)) broken.push({ document: rel, target: written });
+		}
+		for (const [mention] of text.matchAll(MENTION)) credit(rel, mention);
+	}
+
+	return { cited, broken };
+}
+
+/**
+ * The quest-relative path a mention names under `attachments/`, or
+ * undefined when it names another quest's, the folder as a whole, or
+ * nothing that stays inside it.
+ */
+function attachmentKey(quest: string, mention: string): string | undefined {
+	const ids = mention.match(QUEST_ID) ?? [];
+	const owner = ids.at(-1);
+	if (owner !== undefined && owner !== quest) return undefined;
+	const marker = `${ATTACHMENTS_FOLDER}/`;
+	const after = owner === undefined ? 0 : mention.lastIndexOf(owner);
+	const at = mention.indexOf(marker, after);
+	if (at < 0) return undefined;
+
+	let within = mention.slice(at + marker.length).replace(/[#?].*$/, "");
+	const glob = within.search(/[*?[{]/);
+	if (glob >= 0) within = within.slice(0, within.lastIndexOf("/", glob) + 1);
+	within = within.replace(/[.:;!?*_]+$/, "");
+	const normal = posix.normalize(within).replace(/\/+$/, "");
+	if (!normal || normal === "." || normal.startsWith("..")) return undefined;
+	return `${marker}${normal}`;
+}
+
+/** A link target with its percent-encoding undone, or as written when malformed. */
+function decoded(target: string): string {
+	try {
+		return decodeURI(target);
+	} catch {
+		return target;
+	}
 }
 
 /** A size problem when `size` is over `limit`. */

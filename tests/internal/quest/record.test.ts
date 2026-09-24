@@ -1,10 +1,110 @@
 import { describe, expect, it } from "vitest";
 import {
 	ATTACHMENT_LIMITS,
+	attachmentCitations,
 	attachmentNameProblem,
 	attachmentProblem,
 	questRecordPath,
 } from "../../../internal/quest/record.js";
+
+describe("attachmentCitations", () => {
+	const quest = "QEST-20260924-ABC123";
+	const attachments = [
+		"attachments/cost.png",
+		"attachments/cost chart.png",
+		"attachments/taxonomy.json",
+		"attachments/runs/a/summary.md",
+		"attachments/runs/b/summary.md",
+		"attachments/lonely.md",
+	];
+	const cite = (documents: { rel: string; text: string }[]) =>
+		attachmentCitations(quest, documents, attachments);
+
+	it("counts a link, an image, a reference and a code span", () => {
+		const { cited, broken } = cite([
+			{ rel: "README.md", text: "![Cost](attachments/cost.png)" },
+			{
+				rel: "plans/PLAN-20260924-RUE4Q4.md",
+				text: [
+					"See [the chart](<../attachments/cost chart.png>).",
+					"Built from `$Q/attachments/taxonomy.json`.",
+					"",
+					"[cost]: ../attachments/cost.png",
+				].join("\n"),
+			},
+		]);
+		expect(Object.fromEntries(cited)).toEqual({
+			"attachments/cost.png": ["README.md", "plans/PLAN-20260924-RUE4Q4.md"],
+			"attachments/cost chart.png": ["plans/PLAN-20260924-RUE4Q4.md"],
+			"attachments/taxonomy.json": ["plans/PLAN-20260924-RUE4Q4.md"],
+		});
+		expect(broken).toEqual([]);
+	});
+
+	it("counts every file in a cited folder", () => {
+		const { cited } = cite([
+			{ rel: "README.md", text: "Runs are in [runs](attachments/runs/)." },
+		]);
+		expect([...cited.keys()]).toEqual([
+			"attachments/runs/a/summary.md",
+			"attachments/runs/b/summary.md",
+		]);
+	});
+
+	it("reads a citation through a glob as its folder", () => {
+		const { cited } = cite([
+			{ rel: "README.md", text: "`attachments/runs/*/summary.md`" },
+		]);
+		expect(cited.size).toBe(2);
+	});
+
+	it("reads a link's target without its anchor, title or trailing punctuation", () => {
+		const { cited, broken } = cite([
+			{
+				rel: "README.md",
+				text: '[a](attachments/lonely.md#top "Notes"), then attachments/taxonomy.json.',
+			},
+		]);
+		expect([...cited.keys()].sort()).toEqual([
+			"attachments/lonely.md",
+			"attachments/taxonomy.json",
+		]);
+		expect(broken).toEqual([]);
+	});
+
+	it("reads an encoded space in a link", () => {
+		const { cited } = cite([
+			{ rel: "README.md", text: "![c](attachments/cost%20chart.png)" },
+		]);
+		expect([...cited.keys()]).toEqual(["attachments/cost chart.png"]);
+	});
+
+	it("does not count another quest's attachments", () => {
+		const { cited, broken } = cite([
+			{
+				rel: "README.md",
+				text: "[x](../QEST-20260101-OTHER1/attachments/cost.png) and `~/q/QEST-20260101-OTHER1/attachments/lonely.md`",
+			},
+		]);
+		expect(cited.size).toBe(0);
+		expect(broken).toEqual([]);
+	});
+
+	it("lists a link into attachments that resolves to nothing", () => {
+		const { broken } = cite([
+			{
+				rel: "reports/RPRT-20260923-9JE9OQ.md",
+				text: "![gone](../attachments/gone.png) and `attachments/planned.md`",
+			},
+		]);
+		expect(broken).toEqual([
+			{
+				document: "reports/RPRT-20260923-9JE9OQ.md",
+				target: "../attachments/gone.png",
+			},
+		]);
+	});
+});
 
 describe("attachmentProblem", () => {
 	const text = new TextEncoder().encode("# notes\n");
