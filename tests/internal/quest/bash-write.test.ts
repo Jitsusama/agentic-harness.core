@@ -12,6 +12,7 @@ describe("resolveBashWrites", () => {
 		const command = "cd /tree/src && cat >> x_test.go <<'EOF'\nbody\nEOF";
 		expect(resolveBashWrites(command, where)).toEqual({
 			paths: ["/tree/src/x_test.go"],
+			removed: [],
 			unresolved: [],
 		});
 	});
@@ -47,6 +48,7 @@ describe("resolveBashWrites", () => {
 		const command = "cd $(git rev-parse --show-toplevel) && echo x > out.txt";
 		expect(resolveBashWrites(command, where)).toEqual({
 			paths: [],
+			removed: [],
 			unresolved: ["out.txt"],
 		});
 	});
@@ -59,6 +61,7 @@ describe("resolveBashWrites", () => {
 	it("reports a target built from an unknown variable as unresolved", () => {
 		expect(resolveBashWrites('echo x > "$OUT/f.txt"', where)).toEqual({
 			paths: [],
+			removed: [],
 			unresolved: ["$OUT/f.txt"],
 		});
 	});
@@ -67,6 +70,7 @@ describe("resolveBashWrites", () => {
 		const command = "(cd sub && echo x > b.txt)";
 		expect(resolveBashWrites(command, where)).toEqual({
 			paths: [],
+			removed: [],
 			unresolved: ["b.txt"],
 		});
 	});
@@ -132,6 +136,53 @@ describe("resolveBashWrites", () => {
 		for (const [command, paths] of cases) {
 			expect(resolveBashWrites(command, where).paths, command).toEqual(paths);
 		}
+	});
+
+	it("reports what a command removes apart from what it writes", () => {
+		const cases: [string, string[], string[]][] = [
+			["rm -rf build notes.md", [], ["/session/build", "/session/notes.md"]],
+			["cd /q && rm -- -odd.md", [], ["/q/-odd.md"]],
+			["rmdir -p a/b", [], ["/session/a/b"]],
+			["unlink /abs/f", [], ["/abs/f"]],
+			["mv plans/a.md lab/", ["/session/lab/a.md"], ["/session/plans/a.md"]],
+			[
+				"mv -t lab a.md b.md",
+				["/session/lab/a.md", "/session/lab/b.md"],
+				["/session/a.md", "/session/b.md"],
+			],
+			["nohup rm -f ~/x.log", [], ["/home/me/x.log"]],
+		];
+		for (const [command, paths, removed] of cases) {
+			const writes = resolveBashWrites(command, where);
+			expect(writes.paths, command).toEqual(paths);
+			expect(writes.removed, command).toEqual(removed);
+		}
+	});
+
+	it("expands a brace list into each path bash would write", () => {
+		const cases: [string, string[]][] = [
+			["mkdir -p lab/{a,b}", ["/session/lab/a", "/session/lab/b"]],
+			[
+				"mkdir -p {x,y}/{1,2}",
+				["/session/x/1", "/session/x/2", "/session/y/1", "/session/y/2"],
+			],
+			["touch f.{md,png}", ["/session/f.md", "/session/f.png"]],
+			["mkdir {a,b{c,d}}", ["/session/a", "/session/bc", "/session/bd"]],
+			["touch '{a,b}'", ["/session/{a,b}"]],
+			["touch {solo}", ["/session/{solo}"]],
+			["cp a.md lab/*.md", ["/session/lab/*.md"]],
+		];
+		for (const [command, paths] of cases) {
+			expect(resolveBashWrites(command, where).paths, command).toEqual(paths);
+		}
+	});
+
+	it("reports a removal it cannot place as unresolved", () => {
+		expect(resolveBashWrites('rm "$DIR/f.md"', where)).toEqual({
+			paths: [],
+			removed: [],
+			unresolved: ["$DIR/f.md"],
+		});
 	});
 
 	it("reports nothing for an editor that is not editing in place", () => {

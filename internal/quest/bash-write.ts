@@ -14,7 +14,7 @@ import {
 	stripShellData,
 	unquote,
 } from "../../shell/index.js";
-import { createdBy, unwrap } from "./bash-create.js";
+import { createdBy, removedBy, unwrap } from "./bash-effects.js";
 
 /** What kind of write, if any, a bash command performs. */
 export type BashWriteKind = "git-mutating" | "bash-write" | "read-only";
@@ -144,6 +144,8 @@ export interface CommandPlace {
 export interface ResolvedWrites {
 	/** Absolute paths the command writes to. */
 	readonly paths: string[];
+	/** Absolute paths the command removes. */
+	readonly removed: string[];
 	/** Targets it writes to whose location the command does not say. */
 	readonly unresolved: string[];
 }
@@ -164,6 +166,11 @@ export interface ResolvedWrites {
  * variable from outside the command, or a relative target in a subshell
  * or loop that changes directory. A guess judges a file nobody wrote,
  * while an unresolved target can still be checked on disk afterwards.
+ *
+ * What a command removes is placed the same way and kept apart, since
+ * removing a document is a different question from writing one. It is
+ * only read where the command model applies; a removal inside a loop or
+ * a subshell is left to the check on disk.
  */
 export function resolveBashWrites(
 	command: string,
@@ -172,27 +179,35 @@ export function resolveBashWrites(
 	const skeleton = stripShellData(stripHeredocBodies(command));
 	const known = assignmentsIn(skeleton, command);
 	const paths: string[] = [];
+	const removed: string[] = [];
 	const unresolved: string[] = [];
-	const locate = (raw: string, dir: string | undefined): void => {
+	const locate = (
+		raw: string,
+		dir: string | undefined,
+		into: string[] = paths,
+	): void => {
 		const bare = raw.replace(/^['"]/, "").replace(/['"]$/, "");
 		if (!bare) return;
 		const value = expand(bare, known);
 		const absolute =
 			value === undefined ? undefined : absoluteIn(value, dir, place.home);
 		if (absolute === undefined) unresolved.push(value ?? bare);
-		else paths.push(absolute);
+		else into.push(absolute);
 	};
 
 	const line = tokenize(command);
 	if (line.supported) {
 		let dir: string | undefined = place.cwd;
 		for (const simple of line.commands) {
-			const argv = simple.argv.map((word) => unquote(word.text));
+			const argv = argvOf(simple);
 			if (argv[0] === "cd") {
 				dir = changeDirectory(dir, argv[1], known, place.home);
 				continue;
 			}
 			for (const target of commandTargets(simple)) locate(target, dir);
+			for (const target of removedBy(unwrap(argv))) {
+				locate(target, dir, removed);
+			}
 		}
 	} else {
 		// Outside the grammar there is no order to follow, so a relative
@@ -205,6 +220,7 @@ export function resolveBashWrites(
 
 	return {
 		paths: [...new Set(paths)],
+		removed: [...new Set(removed)],
 		unresolved: [...new Set(unresolved)],
 	};
 }
@@ -262,7 +278,7 @@ function commandTargets(simple: SimpleCommand): string[] {
 		found.push(unquote(redirect.target.text));
 	}
 
-	const argv = unwrap(simple.argv.map((word) => unquote(word.text)));
+	const argv = unwrap(argvOf(simple));
 	const name = argv[0];
 	if (!name) return found;
 	found.push(...createdBy(argv));
@@ -369,6 +385,75 @@ function perlFiles(args: string[]): string[] {
 	}
 	if (!inPlace) return [];
 	return inline ? operands : operands.slice(1);
+}
+
+/** A command's arguments as the command receives them: braces expanded, quotes removed. */
+function argvOf(simple: SimpleCommand): string[] {
+	return simple.argv.flatMap((word) => expandBraces(word.text).map(unquote));
+}
+
+/**
+ * A word with its brace lists expanded, the way bash does before a
+ * command sees its arguments: `lab/{a,b}` is `lab/a lab/b`.
+ *
+ * Only an unquoted list with a comma at its top level expands, so
+ * `'{a,b}'`, `{solo}` and a variable's `${NAME}` stay as written. A
+ * sequence such as `{1..3}` is left alone too; nothing that writes into a
+ * quest folder has been seen to use one.
+ */
+function expandBraces(word: string): string[] {
+	for (let open = 0; open < word.length; open = skipQuoted(word, open) + 1) {
+		if (word[open] !== "{" || word[open - 1] === "$") continue;
+		const list = braceList(word, open);
+		if (!list) continue;
+		const prefix = word.slice(0, open);
+		const suffix = word.slice(list.close + 1);
+		return list.parts.flatMap((part) => expandBraces(prefix + part + suffix));
+	}
+	return [word];
+}
+
+/**
+ * The alternatives of the brace list opening at `open`, and where it
+ * closes, or undefined when the braces hold no top-level comma or never
+ * close.
+ */
+function braceList(
+	word: string,
+	open: number,
+): { parts: string[]; close: number } | undefined {
+	const parts: string[] = [];
+	let depth = 0;
+	let start = open + 1;
+	for (let at = open; at < word.length; at = skipQuoted(word, at) + 1) {
+		const char = word[at];
+		if (char === "{") depth++;
+		else if (char === "}" && --depth === 0) {
+			if (parts.length === 0) return undefined;
+			parts.push(word.slice(start, at));
+			return { parts, close: at };
+		} else if (char === "," && depth === 1) {
+			parts.push(word.slice(start, at));
+			start = at + 1;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * The last index of the quoted span or escape starting at `at`, or `at`
+ * itself when nothing starts there, so a scan can step past quoted text.
+ */
+function skipQuoted(word: string, at: number): number {
+	const char = word[at];
+	if (char === "\\") return at + 1;
+	if (char !== "'" && char !== '"') return at;
+	let end = at + 1;
+	while (end < word.length && word[end] !== char) {
+		if (char === '"' && word[end] === "\\") end++;
+		end++;
+	}
+	return end;
 }
 
 /**

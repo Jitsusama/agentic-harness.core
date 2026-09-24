@@ -1,9 +1,10 @@
 /**
- * The files a command creates without a redirect: copies, moves, links,
- * directories, clones, downloads and unpacked archives.
+ * What a command does to files without a redirect: the copies, moves,
+ * links, directories, clones, downloads and unpacked archives it creates,
+ * and the files it removes.
  *
- * Each reader takes an unquoted argv and answers with the destinations as
- * the command names them, relative or not, so the caller can place them
+ * Each reader takes an unquoted argv and answers with the paths as the
+ * command names them, relative or not, so the caller can place them
  * in the directory the command runs in. A reader reads options the way
  * its command does, since an option's value taken for a destination is a
  * path nobody wrote. What a command writes to standard output names no
@@ -482,5 +483,30 @@ export function unwrap(argv: readonly string[]): string[] {
 export function createdBy(argv: readonly string[]): string[] {
 	const [name, ...args] = argv;
 	const reader = name === undefined ? undefined : CREATORS[name];
+	return reader ? reader(args) : [];
+}
+
+/** The readers of what a command removes, by command name. */
+const REMOVERS: Record<string, (args: string[]) => string[]> = {
+	rm: operandsOf({}),
+	rmdir: operandsOf({}),
+	unlink: operandsOf({}),
+	mv: (args) => {
+		const parsed = parse(args, {
+			short: "tS",
+			long: ["target-directory", "suffix"],
+		});
+		const into = last(parsed, "t", "target-directory");
+		return into === undefined ? parsed.operands.slice(0, -1) : parsed.operands;
+	},
+};
+
+/**
+ * The files a command removes, as the command names them. A move removes
+ * its sources, since what was there is no longer there.
+ */
+export function removedBy(argv: readonly string[]): string[] {
+	const [name, ...args] = argv;
+	const reader = name === undefined ? undefined : REMOVERS[name];
 	return reader ? reader(args) : [];
 }
