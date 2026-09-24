@@ -14,6 +14,7 @@ import {
 	stripShellData,
 	unquote,
 } from "../../shell/index.js";
+import { createdBy, unwrap } from "./bash-create.js";
 
 /** What kind of write, if any, a bash command performs. */
 export type BashWriteKind = "git-mutating" | "bash-write" | "read-only";
@@ -240,11 +241,12 @@ function absoluteIn(
  * One command's write destinations, read from the command model, where
  * quoting is already understood.
  *
- * Three shapes, the same three `patternTargets` looks for: a redirect's
- * target, `tee`'s file arguments, and the file arguments of an in-place
- * editor. A file-descriptor redirect (`2>`, `&>`) is skipped, matching
- * what the pattern pass does, since it routes a stream rather than naming
- * a content target.
+ * The three shapes `patternTargets` also looks for, a redirect's target,
+ * `tee`'s file arguments and the file arguments of an in-place editor,
+ * plus what a command creates without a redirect (see `createdBy`), read
+ * through wrappers such as `nohup` and `env`. A file-descriptor redirect
+ * (`2>`, `&>`) is skipped, matching what the pattern pass does, since it
+ * routes a stream rather than naming a content target.
  *
  * An editor's script is told apart from its files by reading its options
  * the way the editor does, since a script reported as a file is a path
@@ -260,9 +262,10 @@ function commandTargets(simple: SimpleCommand): string[] {
 		found.push(unquote(redirect.target.text));
 	}
 
-	const argv = simple.argv.map((word) => unquote(word.text));
+	const argv = unwrap(simple.argv.map((word) => unquote(word.text)));
 	const name = argv[0];
 	if (!name) return found;
+	found.push(...createdBy(argv));
 	if (name === "tee") {
 		found.push(...argv.slice(1).filter((token) => !token.startsWith("-")));
 	}

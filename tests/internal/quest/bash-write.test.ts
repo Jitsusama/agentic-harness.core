@@ -97,6 +97,43 @@ describe("resolveBashWrites", () => {
 		}
 	});
 
+	it("reports where a command creates files without a redirect", () => {
+		const cases: [string, string[]][] = [
+			["cp a.txt out.txt", ["/session/out.txt"]],
+			["cp -R src/ /abs/dest", ["/abs/dest"]],
+			["cp a.txt b.png lab/", ["/session/lab/a.txt", "/session/lab/b.png"]],
+			["cp -t lab a.txt", ["/session/lab/a.txt"]],
+			["mv old.md new.md", ["/session/new.md"]],
+			["install -m 0644 a.sh bin/a", ["/session/bin/a"]],
+			["ln -s /abs/target link", ["/session/link"]],
+			["rsync -a --exclude node_modules src/ lab", ["/session/lab"]],
+			["rsync -a src/ host:/srv", []],
+			["mkdir -p -m 700 a/b c", ["/session/a/b", "/session/c"]],
+			["touch -t 202601010000 stamp", ["/session/stamp"]],
+			["dd if=/dev/zero of=blob.bin bs=1m count=1", ["/session/blob.bin"]],
+			["git clone --depth 1 https://x.io/o/repo.git", ["/session/repo"]],
+			["git clone -b main git@x.io:o/r.git lab/r", ["/session/lab/r"]],
+			["git -C /abs clone https://x.io/o/r", ["/abs/r"]],
+			["git worktree add -b topic ../wt main", ["/wt"]],
+			["curl -sSLo page.html https://x.io/p", ["/session/page.html"]],
+			["curl --output=a.json https://x.io/a", ["/session/a.json"]],
+			["curl -H 'A: b' -O https://x.io/d/f.tgz", ["/session/f.tgz"]],
+			["curl -s https://x.io/p", []],
+			["wget -q -O f.zip https://x.io/f", ["/session/f.zip"]],
+			["wget -P dl https://x.io/d/f.zip", ["/session/dl/f.zip"]],
+			["tar -czf out.tgz dir", ["/session/out.tgz"]],
+			["tar xzf in.tgz -C lab", ["/session/lab"]],
+			["tar -xf in.tar", ["/session"]],
+			["tar -tf in.tar", []],
+			["unzip -q in.zip -d lab", ["/session/lab"]],
+			["nohup cp a.txt b.txt &", ["/session/b.txt"]],
+			["time env X=1 nice -n 5 command mkdir d", ["/session/d"]],
+		];
+		for (const [command, paths] of cases) {
+			expect(resolveBashWrites(command, where).paths, command).toEqual(paths);
+		}
+	});
+
 	it("reports nothing for an editor that is not editing in place", () => {
 		expect(resolveBashWrites("sed 's/a/b/' x.go", where).paths).toEqual([]);
 	});
