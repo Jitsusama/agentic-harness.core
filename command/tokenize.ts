@@ -254,12 +254,22 @@ function toHeredoc(info: HeredocInfo): Heredoc {
 	};
 }
 
-const REDIRECT = /^(\d*)(>>|>|<)(&\d+)?$/;
+/**
+ * A word that begins with a redirect operator: an optional file
+ * descriptor or `&`, the operator, then whatever is written against it.
+ * A `<`, `>` or `(` straight after the operator is a here-string or a
+ * process substitution, which name no file.
+ */
+const REDIRECT = /^(\d*|&)(>>|>|<)(?![<>(])(.*)$/s;
+
+/** What follows a duplication operator: a descriptor, or `-` to close. */
+const DUPLICATION = /^&(\d+|-)$/;
 
 /**
  * Pull redirects out of a word list. A redirect operator that names
- * a file descriptor duplication (2>&1) stands alone; any other
- * operator consumes the following word as its target.
+ * a file descriptor duplication (2>&1) stands alone. Any other
+ * operator names its target either in the same word (`2>/dev/null`)
+ * or, when written alone, in the word that follows.
  */
 function extractRedirects(words: Word[]): {
 	argv: Word[];
@@ -276,8 +286,27 @@ function extractRedirects(words: Word[]): {
 			continue;
 		}
 
-		const hasDuplication = Boolean(match[3]);
-		const target = !hasDuplication ? words[j + 1] : undefined;
+		const attached = match[3] ?? "";
+		if (DUPLICATION.test(attached)) {
+			redirects.push({ span: word.span, operator: word.text });
+			continue;
+		}
+		if (attached) {
+			const operator = word.text.slice(0, word.text.length - attached.length);
+			const start = word.span.start + operator.length;
+			redirects.push({
+				span: word.span,
+				operator,
+				target: {
+					span: { start, end: word.span.end },
+					text: attached,
+					quoting: quotingOf(attached),
+				},
+			});
+			continue;
+		}
+
+		const target = words[j + 1];
 		if (target) {
 			redirects.push({
 				span: { start: word.span.start, end: target.span.end },
@@ -374,6 +403,24 @@ function scanWords(source: string, start: number, end: number): Word[] {
 	}
 
 	return words;
+}
+
+/** The quote style of a word's text, read the way `scanWords` reads it. */
+function quotingOf(text: string): Quoting {
+	let sawSingle = false;
+	let sawDouble = false;
+	let i = 0;
+	while (i < text.length) {
+		const ch = text[i];
+		if (ch === "'" || ch === '"') {
+			if (ch === "'") sawSingle = true;
+			else sawDouble = true;
+			i = skipQuoted(text, i);
+			continue;
+		}
+		i++;
+	}
+	return classifyQuoting(sawSingle, sawDouble);
 }
 
 /** Classify a word's quote style from which quote kinds it used. */

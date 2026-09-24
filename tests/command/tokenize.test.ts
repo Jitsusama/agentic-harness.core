@@ -106,6 +106,46 @@ describe("tokenize", () => {
 		expect(command.redirects[0].target?.quoting).toBe("double");
 	});
 
+	it("captures a redirect whose target is written against the operator", () => {
+		const cases: [string, string, string][] = [
+			["sed -n p x.go 2>/dev/null", "2>", "/dev/null"],
+			["echo hi >out.txt", ">", "out.txt"],
+			['echo hi >>"a b.txt"', ">>", '"a b.txt"'],
+			["make &>build.log", "&>", "build.log"],
+			["wc -l <in.txt", "<", "in.txt"],
+		];
+		for (const [source, operator, target] of cases) {
+			const command = tokenize(source).commands[0];
+			const redirect = command.redirects[0];
+			expect(redirect?.operator, source).toBe(operator);
+			expect(redirect?.target?.text, source).toBe(target);
+			expect(
+				source.slice(redirect?.target?.span.start, redirect?.target?.span.end),
+				source,
+			).toBe(target);
+			expect(command.argv.map((w) => w.text).join(" "), source).not.toMatch(
+				/[<>]/,
+			);
+		}
+	});
+
+	it("reads the quoting of an attached target", () => {
+		const command = tokenize('echo hi >"/tmp/it\'s.txt"').commands[0];
+		expect(command.redirects[0].target?.quoting).toBe("double");
+	});
+
+	it("captures an attached duplication without a target", () => {
+		const command = tokenize("make >&2").commands[0];
+		expect(command.argv.map((w) => w.text)).toEqual(["make"]);
+		expect(command.redirects[0].operator).toBe(">&2");
+		expect(command.redirects[0].target).toBeUndefined();
+	});
+
+	it("keeps a here-string in argv rather than reading it as a file", () => {
+		const command = tokenize('cat <<<"text"').commands[0];
+		expect(command.redirects).toEqual([]);
+	});
+
 	it("keeps a trailing redirect operator out of argv", () => {
 		// A redirect operator at the end of a segment has no target
 		// word. It must still leave argv clean rather than leaking the
