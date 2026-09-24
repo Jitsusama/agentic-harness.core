@@ -2,7 +2,200 @@ import { describe, expect, it } from "vitest";
 import {
 	bashWriteTargets,
 	classifyBashWrite,
+	resolveBashWrites,
 } from "../../../internal/quest/bash-write.js";
+
+describe("resolveBashWrites", () => {
+	const where = { cwd: "/session", home: "/home/me" };
+
+	it("places a relative target in the directory a cd moved to", () => {
+		const command = "cd /tree/src && cat >> x_test.go <<'EOF'\nbody\nEOF";
+		expect(resolveBashWrites(command, where)).toEqual({
+			paths: ["/tree/src/x_test.go"],
+			removed: [],
+			unresolved: [],
+		});
+	});
+
+	it("places a target in the session directory when nothing moved it", () => {
+		expect(resolveBashWrites("echo x > notes.md", where).paths).toEqual([
+			"/session/notes.md",
+		]);
+	});
+
+	it("follows a cd to a directory the command assigned", () => {
+		const command = "Q=~/quests/Q1; cd $Q/lab && echo x > run.log";
+		expect(resolveBashWrites(command, where).paths).toEqual([
+			"/home/me/quests/Q1/lab/run.log",
+		]);
+	});
+
+	it("only moves the targets of commands after the cd", () => {
+		const command = "echo a > first.txt; cd sub; echo b > second.txt";
+		expect(resolveBashWrites(command, where).paths).toEqual([
+			"/session/first.txt",
+			"/session/sub/second.txt",
+		]);
+	});
+
+	it("expands a home-relative target", () => {
+		expect(resolveBashWrites("echo x > ~/out.txt", where).paths).toEqual([
+			"/home/me/out.txt",
+		]);
+	});
+
+	it("reports a relative target as unresolved after a cd it cannot follow", () => {
+		const command = "cd $(git rev-parse --show-toplevel) && echo x > out.txt";
+		expect(resolveBashWrites(command, where)).toEqual({
+			paths: [],
+			removed: [],
+			unresolved: ["out.txt"],
+		});
+	});
+
+	it("still places an absolute target after a cd it cannot follow", () => {
+		const command = "cd $(pwd) && echo x > /abs/out.txt";
+		expect(resolveBashWrites(command, where).paths).toEqual(["/abs/out.txt"]);
+	});
+
+	it("reports a target built from an unknown variable as unresolved", () => {
+		expect(resolveBashWrites('echo x > "$OUT/f.txt"', where)).toEqual({
+			paths: [],
+			removed: [],
+			unresolved: ["$OUT/f.txt"],
+		});
+	});
+
+	it("leaves a relative target in a subshell with a cd unresolved", () => {
+		const command = "(cd sub && echo x > b.txt)";
+		expect(resolveBashWrites(command, where)).toEqual({
+			paths: [],
+			removed: [],
+			unresolved: ["b.txt"],
+		});
+	});
+
+	it("reports only the files an in-place sed edits", () => {
+		const cases: [string, string[]][] = [
+			["sed -i 's/a(t, s)/b(t, s)/' x.go 2>/dev/null", ["/session/x.go"]],
+			["sed -i '' 's/a/b/' x.go y.go", ["/session/x.go", "/session/y.go"]],
+			["sed -i.bak 's/a/b/' x.go", ["/session/x.go"]],
+			["sed -i .bak 's/a/b/' x.go", ["/session/x.go"]],
+			["sed -E -i -e 's/a/b/' -e 's/c/d/' x.go", ["/session/x.go"]],
+			["sed --in-place=.orig -f fix.sed x.go", ["/session/x.go"]],
+			["gsed -i 's/a/b/' x.go", ["/session/x.go"]],
+		];
+		for (const [command, paths] of cases) {
+			expect(resolveBashWrites(command, where).paths, command).toEqual(paths);
+		}
+	});
+
+	it("reports only the files an in-place perl edits", () => {
+		const cases: [string, string[]][] = [
+			["perl -pi -e 's/a/b/' x.go", ["/session/x.go"]],
+			["perl -i.bak -ne 'print' x.go y.go", ["/session/x.go", "/session/y.go"]],
+			["perl -i fix.pl x.go", ["/session/x.go"]],
+		];
+		for (const [command, paths] of cases) {
+			expect(resolveBashWrites(command, where).paths, command).toEqual(paths);
+		}
+	});
+
+	it("reports where a command creates files without a redirect", () => {
+		const cases: [string, string[]][] = [
+			["cp a.txt out.txt", ["/session/out.txt"]],
+			["cp -R src/ /abs/dest", ["/abs/dest"]],
+			["cp a.txt b.png lab/", ["/session/lab/a.txt", "/session/lab/b.png"]],
+			["cp -t lab a.txt", ["/session/lab/a.txt"]],
+			["mv old.md new.md", ["/session/new.md"]],
+			["install -m 0644 a.sh bin/a", ["/session/bin/a"]],
+			["ln -s /abs/target link", ["/session/link"]],
+			["rsync -a --exclude node_modules src/ lab", ["/session/lab"]],
+			["rsync -a src/ host:/srv", []],
+			["mkdir -p -m 700 a/b c", ["/session/a/b", "/session/c"]],
+			["touch -t 202601010000 stamp", ["/session/stamp"]],
+			["dd if=/dev/zero of=blob.bin bs=1m count=1", ["/session/blob.bin"]],
+			["git clone --depth 1 https://x.io/o/repo.git", ["/session/repo"]],
+			["git clone -b main git@x.io:o/r.git lab/r", ["/session/lab/r"]],
+			["git -C /abs clone https://x.io/o/r", ["/abs/r"]],
+			["git worktree add -b topic ../wt main", ["/wt"]],
+			["curl -sSLo page.html https://x.io/p", ["/session/page.html"]],
+			["curl --output=a.json https://x.io/a", ["/session/a.json"]],
+			["curl -H 'A: b' -O https://x.io/d/f.tgz", ["/session/f.tgz"]],
+			["curl -s https://x.io/p", []],
+			["wget -q -O f.zip https://x.io/f", ["/session/f.zip"]],
+			["wget -P dl https://x.io/d/f.zip", ["/session/dl/f.zip"]],
+			["tar -czf out.tgz dir", ["/session/out.tgz"]],
+			["tar xzf in.tgz -C lab", ["/session/lab"]],
+			["tar -xf in.tar", ["/session"]],
+			["tar -tf in.tar", []],
+			["unzip -q in.zip -d lab", ["/session/lab"]],
+			["nohup cp a.txt b.txt &", ["/session/b.txt"]],
+			["time env X=1 nice -n 5 command mkdir d", ["/session/d"]],
+		];
+		for (const [command, paths] of cases) {
+			expect(resolveBashWrites(command, where).paths, command).toEqual(paths);
+		}
+	});
+
+	it("reports what a command removes apart from what it writes", () => {
+		const cases: [string, string[], string[]][] = [
+			["rm -rf build notes.md", [], ["/session/build", "/session/notes.md"]],
+			["cd /q && rm -- -odd.md", [], ["/q/-odd.md"]],
+			["rmdir -p a/b", [], ["/session/a/b"]],
+			["unlink /abs/f", [], ["/abs/f"]],
+			["mv plans/a.md lab/", ["/session/lab/a.md"], ["/session/plans/a.md"]],
+			[
+				"mv -t lab a.md b.md",
+				["/session/lab/a.md", "/session/lab/b.md"],
+				["/session/a.md", "/session/b.md"],
+			],
+			["nohup rm -f ~/x.log", [], ["/home/me/x.log"]],
+		];
+		for (const [command, paths, removed] of cases) {
+			const writes = resolveBashWrites(command, where);
+			expect(writes.paths, command).toEqual(paths);
+			expect(writes.removed, command).toEqual(removed);
+		}
+	});
+
+	it("expands a brace list into each path bash would write", () => {
+		const cases: [string, string[]][] = [
+			["mkdir -p lab/{a,b}", ["/session/lab/a", "/session/lab/b"]],
+			[
+				"mkdir -p {x,y}/{1,2}",
+				["/session/x/1", "/session/x/2", "/session/y/1", "/session/y/2"],
+			],
+			["touch f.{md,png}", ["/session/f.md", "/session/f.png"]],
+			["mkdir {a,b{c,d}}", ["/session/a", "/session/bc", "/session/bd"]],
+			["touch '{a,b}'", ["/session/{a,b}"]],
+			["touch {solo}", ["/session/{solo}"]],
+			["cp a.md lab/*.md", ["/session/lab/*.md"]],
+		];
+		for (const [command, paths] of cases) {
+			expect(resolveBashWrites(command, where).paths, command).toEqual(paths);
+		}
+	});
+
+	it("reports a removal it cannot place as unresolved", () => {
+		expect(resolveBashWrites('rm "$DIR/f.md"', where)).toEqual({
+			paths: [],
+			removed: [],
+			unresolved: ["$DIR/f.md"],
+		});
+	});
+
+	it("reports nothing for an editor that is not editing in place", () => {
+		expect(resolveBashWrites("sed 's/a/b/' x.go", where).paths).toEqual([]);
+	});
+
+	it("places targets in a loop without a cd in the session directory", () => {
+		const command = "for f in a b; do echo $f >> all.txt; done";
+		expect(resolveBashWrites(command, where).paths).toEqual([
+			"/session/all.txt",
+		]);
+	});
+});
 
 describe("classifyBashWrite", () => {
 	it("flags a genuinely git-mutating command as git-mutating", () => {
