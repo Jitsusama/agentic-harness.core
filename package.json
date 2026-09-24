@@ -49,6 +49,7 @@
 		"./quest/write-classifier": "./dist/internal/quest/write-classifier.js",
 		"./quest/record": "./dist/internal/quest/record.js",
 		"./quest/workspace": "./dist/internal/quest/workspace.js",
+		"./quest/record-gate": "./dist/internal/quest/record-gate.js",
 		"./tree": "./dist/tree/index.js",
 		"./lsp": "./dist/lsp/index.js",
 		"./result": "./dist/result/index.js",
