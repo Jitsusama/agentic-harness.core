@@ -16,7 +16,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { VirtualConsole } from "jsdom";
 import type { Page } from "puppeteer-core";
-import { isPidAlive, newPage } from "./browser.js";
+import { abortError } from "./bound.js";
+import { isPidAlive, withTab } from "./browser.js";
 import { injectCookies, isSetUp } from "./cookies/index.js";
 import {
 	BUNDLE_ROOT,
@@ -113,6 +114,13 @@ const PAGE_LOAD_TIMEOUT = 20_000;
 
 /** Wait time for dynamic content to render after load. */
 const DYNAMIC_CONTENT_WAIT = 1_500;
+
+/**
+ * The longest a whole read may take, from opening its tab to the last
+ * tile. A normal read is a few seconds and a slow one the page load's
+ * twenty plus the capture; past this the page is not coming.
+ */
+const READ_WALL_MS = 60_000;
 
 /** Characters of the best available text used for the inline excerpt. */
 const EXCERPT_LENGTH = 500;
@@ -385,9 +393,18 @@ export function cleanupSessionBundles(): void {
 	}
 }
 
-/** Throw if the operation has been cancelled. */
+/** Throw if the operation has been cancelled, saying it was. */
 function throwIfAborted(signal?: AbortSignal): void {
-	if (signal?.aborted) throw new Error("Aborted");
+	if (signal?.aborted) throw abortError(signal);
+}
+
+/**
+ * Wait here rather than in the page. A page served with the CSP
+ * sandbox directive runs no script, and to Chrome a timer's callback
+ * is script, so a wait the page counted out itself never finished.
+ */
+function pause(ms: number): Promise<void> {
+	return new Promise((wake) => setTimeout(wake, ms));
 }
 
 const defaultCaptureDeps: CaptureDeps = {
@@ -415,10 +432,7 @@ export async function capturePage(
 	});
 	throwIfAborted(signal);
 
-	await page.evaluate(
-		(ms) => new Promise((r) => setTimeout(r, ms)),
-		DYNAMIC_CONTENT_WAIT,
-	);
+	await pause(DYNAMIC_CONTENT_WAIT);
 
 	const finalUrl = page.url();
 	if (isAuthRedirect(finalUrl) && !isSetUp()) {
@@ -462,25 +476,28 @@ export async function capturePage(
 /**
  * Fetch a URL and capture it as a bundle of representations on disk:
  * article markdown, rendered inner text, DOM and screenshot tiles.
+ *
+ * An abort ends the read at once and rejects with an AbortError; a
+ * read that outlasts its wall clock rejects with a TimeoutError
+ * naming the URL.
  */
 export async function readPage(
 	url: string,
 	signal?: AbortSignal,
 ): Promise<PageBundle> {
-	const page = await newPage();
+	const captured = await withTab(
+		{ signal, wallMs: READ_WALL_MS, what: `reading ${url}` },
+		async (page) => {
+			await injectCookies(page, url);
+			return capturePage(page, url, signal);
+		},
+	);
+	const sink = diskSink();
 	try {
-		throwIfAborted(signal);
-		await injectCookies(page, url);
-		const captured = await capturePage(page, url, signal);
-		const sink = diskSink();
-		try {
-			return assembleBundle(captured, sink);
-		} catch (err) {
-			// Don't leave a half-written bundle behind on a failed assembly.
-			fs.rmSync(sink.dir, { recursive: true, force: true });
-			throw err;
-		}
-	} finally {
-		await page.close();
+		return assembleBundle(captured, sink);
+	} catch (err) {
+		// Don't leave a half-written bundle behind on a failed assembly.
+		fs.rmSync(sink.dir, { recursive: true, force: true });
+		throw err;
 	}
 }

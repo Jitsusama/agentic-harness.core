@@ -5,10 +5,18 @@
  * blocks headless browsers, so it is not used.
  */
 
-import { newPage } from "./browser.js";
+import { abortError, isAbort } from "./bound.js";
+import { withTab } from "./browser.js";
 
 /** Timeout for search page navigation in milliseconds. */
 const SEARCH_PAGE_TIMEOUT = 15_000;
+
+/**
+ * The longest one provider may take, from opening its tab to reading
+ * its results: the navigation's own timeout plus room to open the tab
+ * and read the page. Past it, the next provider is tried.
+ */
+const PROVIDER_WALL_MS = 20_000;
 
 /** A single web search result. */
 export interface SearchResult {
@@ -110,30 +118,29 @@ async function runProvider(
 	numResults: number,
 	signal?: AbortSignal,
 ): Promise<SearchResult[]> {
-	const page = await newPage();
-	try {
-		if (signal?.aborted) return [];
-		await page.goto(provider.url(query), {
-			waitUntil: "domcontentloaded",
-			timeout: SEARCH_PAGE_TIMEOUT,
-		});
-		if (signal?.aborted) return [];
-		const raw = await page.evaluate(provider.extract);
-		return raw.slice(0, numResults).map((r) => ({
-			...r,
-			url: provider.cleanUrl(r.url),
-		}));
-	} finally {
-		await page.close();
-	}
+	return withTab(
+		{ signal, wallMs: PROVIDER_WALL_MS, what: `searching ${provider.name}` },
+		async (page) => {
+			await page.goto(provider.url(query), {
+				waitUntil: "domcontentloaded",
+				timeout: SEARCH_PAGE_TIMEOUT,
+			});
+			const raw = await page.evaluate(provider.extract);
+			return raw.slice(0, numResults).map((r) => ({
+				...r,
+				url: provider.cleanUrl(r.url),
+			}));
+		},
+	);
 }
 
 /**
  * Try each provider in order and return the first non-empty
  * result. A provider that throws or returns nothing hands off to
  * the next; when all are exhausted the result is an empty list.
- * The runner is passed in so the fallback order can be exercised
- * without a live browser.
+ * An abort is the caller giving up rather than a provider failing,
+ * so it ends the search and is passed on. The runner is passed in
+ * so the fallback order can be exercised without a live browser.
  */
 export async function firstProviderResults(
 	providers: readonly SearchProvider[],
@@ -143,7 +150,8 @@ export async function firstProviderResults(
 		try {
 			const results = await run(provider);
 			if (results.length > 0) return results;
-		} catch {
+		} catch (err) {
+			if (isAbort(err)) throw err;
 			// This provider failed; fall through to the next one.
 		}
 	}
@@ -160,9 +168,8 @@ export async function webSearch(
 	numResults: number = 10,
 	signal?: AbortSignal,
 ): Promise<SearchResult[]> {
+	if (signal?.aborted) throw abortError(signal);
 	return firstProviderResults(PROVIDERS, (provider) =>
-		signal?.aborted
-			? Promise.resolve([])
-			: runProvider(provider, query, numResults, signal),
+		runProvider(provider, query, numResults, signal),
 	);
 }

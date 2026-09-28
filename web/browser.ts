@@ -18,8 +18,16 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { clearTimeout, setTimeout } from "node:timers";
-import type { Browser, BrowserContext, Page, Target } from "puppeteer-core";
+import type {
+	Browser,
+	BrowserContext,
+	CookieData,
+	Page,
+	Target,
+} from "puppeteer-core";
 import { processGlobal } from "../internal/process-global.js";
+import { abortError, type Bounds, bounded } from "./bound.js";
+import { CookieJar, cookieData } from "./jar.js";
 
 /**
  * puppeteer, loaded when a browser is first launched or joined rather
@@ -346,6 +354,8 @@ interface SharedBrowserState {
 	tabs?: Set<Target>;
 	/** The browser whose handles are ref'd right now, if any. */
 	heldFor?: Browser;
+	/** Cookies one-off reads carry between their contexts, per launch. */
+	jar?: CookieJar;
 	lifecycleInstalled?: boolean;
 	idle?: IdleCloser;
 }
@@ -844,6 +854,9 @@ export async function getBrowser(): Promise<Browser> {
 	try {
 		state.browser = await state.launching;
 		watchTabs(state, state.browser);
+		// A fresh profile has none of the old one's cookies, so the
+		// reads that share them start again too.
+		state.jar = new CookieJar();
 		idleCloser().touch();
 		return state.browser;
 	} finally {
@@ -936,6 +949,136 @@ export async function newContextPage(): Promise<{
 			throw err;
 		}
 	});
+}
+
+/**
+ * How long a one-off tab's close may take. Closing is one round trip
+ * and normally takes tens of milliseconds; this only bites when Chrome
+ * has stopped answering.
+ */
+const TAB_CLOSE_MS = 5_000;
+
+/**
+ * Do one piece of work in a tab of its own, bounded by the caller's
+ * signal and a wall clock, and always close the tab afterwards.
+ *
+ * The tab gets a browser context of its own. Puppeteer's page.close
+ * first waits for every screenshot in flight in the tab's context, so
+ * in the one shared context a single wedged capture held up every
+ * other read's close; in a context of its own it holds up nobody's.
+ *
+ * An abort ends the wait at once and reports itself as an abort. The
+ * tab is closed in the background rather than waited for, since the
+ * person has already moved on, and the loop stays held until that
+ * close is done.
+ */
+export async function withTab<T>(
+	bounds: Bounds,
+	work: (page: Page) => Promise<T>,
+): Promise<T> {
+	if (bounds.signal?.aborted) throw abortError(bounds.signal);
+	let tab: { page: Page; context: BrowserContext } | undefined;
+	let seeded: { jar: CookieJar; cookies: CookieData[] } | undefined;
+	let closing: Promise<void> | undefined;
+	let abandoned = false;
+	const close = (): Promise<void> => {
+		if (!tab) return Promise.resolve();
+		closing ??= closeContextWithin(tab.context, TAB_CLOSE_MS, seeded);
+		return closing;
+	};
+	const run = (async () => {
+		tab = await newContextPage();
+		// Given up on while the tab was still opening: nobody is left
+		// to use it.
+		if (abandoned) {
+			void close();
+			throw abortError(bounds.signal);
+		}
+		seeded = await seedFromJar(tab.context);
+		return work(tab.page);
+	})();
+	try {
+		return await bounded(run, bounds, () => {
+			abandoned = true;
+			void close();
+		});
+	} finally {
+		if (!abandoned) await close();
+	}
+}
+
+/**
+ * Close a context, but never wait longer than it deserves. A close
+ * Chrome never answers leaves the context's tabs uncounted, so a
+ * wedged tab cannot keep the process alive for the rest of its life.
+ */
+async function closeContextWithin(
+	context: BrowserContext,
+	ms: number,
+	seeded?: { jar: CookieJar; cookies: CookieData[] },
+): Promise<void> {
+	try {
+		await holdWhile(() =>
+			bounded(
+				(async () => {
+					if (seeded) await handBackToJar(context, seeded);
+					await context.close();
+				})(),
+				{ wallMs: ms, what: "closing a tab" },
+			),
+		);
+	} catch {
+		// Given up on, or already gone with its browser. Either way
+		// there is nothing left to wait for.
+		forgetContext(context);
+	}
+}
+
+/**
+ * Start a reading context with the cookies earlier reads left, and
+ * say what it was given so its changes can be told apart later.
+ */
+async function seedFromJar(
+	context: BrowserContext,
+): Promise<{ jar: CookieJar; cookies: CookieData[] } | undefined> {
+	const jar = sharedState().jar;
+	if (!jar) return undefined;
+	const cookies = jar.contents();
+	if (cookies.length === 0) return { jar, cookies };
+	try {
+		await context.setCookie(...cookies);
+		return { jar, cookies };
+	} catch {
+		// Carrying cookies over is a nicety, never a reason to fail
+		// a read. The context was given nothing, so say so, and none
+		// of the jar is taken as removed when it ends without them.
+		return { jar, cookies: [] };
+	}
+}
+
+/**
+ * Give the jar what a reading context changed. Only ever a nicety:
+ * a context that cannot be read is closed all the same.
+ */
+async function handBackToJar(
+	context: BrowserContext,
+	seeded: { jar: CookieJar; cookies: CookieData[] },
+): Promise<void> {
+	try {
+		const ended = (await context.cookies()).map(cookieData);
+		seeded.jar.absorb(seeded.cookies, ended);
+	} catch {
+		// The browser went away under us; its cookies went with it.
+	}
+}
+
+/** Stop counting a context's tabs as work in flight. */
+function forgetContext(context: BrowserContext): void {
+	const state = sharedState();
+	for (const target of state.tabs ?? []) {
+		if (target.browserContext() === context) state.tabs?.delete(target);
+	}
+	settleEventLoop(state);
 }
 
 /** Give a fresh tab the user agent we present everywhere. */

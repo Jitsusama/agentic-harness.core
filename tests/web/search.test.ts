@@ -49,6 +49,22 @@ describe("firstProviderResults", () => {
 		expect(out).toEqual([hit]);
 	});
 
+	it("stops at an abort rather than trying the next provider", async () => {
+		const tried: string[] = [];
+		const aborted = new DOMException(
+			"The operation was aborted.",
+			"AbortError",
+		);
+
+		await expect(
+			firstProviderResults([PROVIDER_A, PROVIDER_B], async (p) => {
+				tried.push((p as { name: string }).name);
+				throw aborted;
+			}),
+		).rejects.toBe(aborted);
+		expect(tried).toEqual(["a"]);
+	});
+
 	it("returns empty when every provider is empty", async () => {
 		const out = await firstProviderResults(
 			[PROVIDER_A, PROVIDER_B],

@@ -51,6 +51,7 @@ import {
 	type WalkCapture,
 	type WalkStop,
 } from "./a11y/index.js";
+import { bounded } from "./bound.js";
 import { holdWhile, newContextPage } from "./browser.js";
 import { compareImages, readPng } from "./compare/images.js";
 import type { Comparison } from "./compare/index.js";
@@ -390,6 +391,9 @@ export interface Inspection {
  * a page that keeps starting new ones.
  */
 const SETTLE_CAP_MS = 2000;
+
+/** How long past its own cap the transition probe may run. */
+const SETTLE_CAP_SLACK_MS = 500;
 
 /** An inspection, or the refusal that stopped it. */
 export type InspectResult =
@@ -3944,13 +3948,22 @@ export class BrowserSession {
 	 */
 	private async settleForcedState(objectId: string): Promise<void> {
 		try {
-			await this.cdp.send("Runtime.callFunctionOn", {
-				objectId,
-				functionDeclaration: SETTLE_PROBE,
-				arguments: [{ value: SETTLE_CAP_MS }],
-				awaitPromise: true,
-				returnByValue: true,
-			});
+			// The probe caps itself on the page's own timer, which a
+			// page that runs no script never fires, so the cap is kept
+			// here as well.
+			await bounded(
+				this.cdp.send("Runtime.callFunctionOn", {
+					objectId,
+					functionDeclaration: SETTLE_PROBE,
+					arguments: [{ value: SETTLE_CAP_MS }],
+					awaitPromise: true,
+					returnByValue: true,
+				}),
+				{
+					wallMs: SETTLE_CAP_MS + SETTLE_CAP_SLACK_MS,
+					what: "waiting for transitions",
+				},
+			);
 		} catch {
 			// A reading taken early is worse than one taken late, but
 			// neither is worth abandoning the inspection over.
