@@ -18,7 +18,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { clearTimeout, setTimeout } from "node:timers";
-import type { Browser, BrowserContext, Page } from "puppeteer-core";
+import type { Browser, BrowserContext, Page, Target } from "puppeteer-core";
 import { processGlobal } from "../internal/process-global.js";
 
 /**
@@ -340,6 +340,12 @@ interface SharedBrowserState {
 	closing?: Promise<void>;
 	/** Count of page acquisitions in flight, so an idle close defers to them. */
 	pending?: number;
+	/** Count of holdWhile calls in flight, including a teardown's own. */
+	claims?: number;
+	/** Consumer tabs open in the current browser, seen since its launch. */
+	tabs?: Set<Target>;
+	/** The browser whose handles are ref'd right now, if any. */
+	heldFor?: Browser;
 	lifecycleInstalled?: boolean;
 	idle?: IdleCloser;
 }
@@ -689,7 +695,6 @@ async function launchOnce(executablePath: string): Promise<Browser> {
 	// Record ownership so a later run can tell our live Chrome from an
 	// orphan and know exactly which pid to reap.
 	writeOwnerRecord(profileDir, browserPid, wsEndpoint);
-	releaseEventLoop(browser.process());
 	return browser;
 }
 
@@ -838,6 +843,7 @@ export async function getBrowser(): Promise<Browser> {
 	state.launching = launchBrowser();
 	try {
 		state.browser = await state.launching;
+		watchTabs(state, state.browser);
 		idleCloser().touch();
 		return state.browser;
 	} finally {
@@ -955,12 +961,114 @@ async function withLease<T>(
 	const state = sharedState();
 	// Reserve the lease synchronously, before any await.
 	state.pending = (state.pending ?? 0) + 1;
+	settleEventLoop(state);
 	try {
 		const b = await getBrowser();
 		idleCloser().touch();
 		return await acquire(b);
 	} finally {
 		state.pending = (state.pending ?? 1) - 1;
+		settleEventLoop(state);
+	}
+}
+
+/**
+ * Keep the process alive while some work waits on the browser
+ * with no tab of its own open.
+ *
+ * An open tab already holds the loop, and so does a page
+ * acquisition. What neither covers is a wait that outlives the
+ * tabs it concerns. Closing a browser context is the one that
+ * matters: Chrome reports the context's tabs destroyed before it
+ * answers the call that disposed it, so the answer would arrive
+ * with nothing holding the loop, and a script with nothing else
+ * to do exits waiting for it.
+ */
+export async function holdWhile<T>(work: () => Promise<T>): Promise<T> {
+	const state = sharedState();
+	state.claims = (state.claims ?? 0) + 1;
+	settleEventLoop(state);
+	try {
+		return await work();
+	} finally {
+		state.claims = (state.claims ?? 1) - 1;
+		settleEventLoop(state);
+	}
+}
+
+/**
+ * Count the consumer tabs a freshly launched browser opens from
+ * here on. Watching starts after launch, so the blank tab
+ * puppeteer opens with the browser is never counted: an idle
+ * browser holds nothing.
+ *
+ * A tab counts until its Page reports closed, not until its
+ * target is destroyed. Puppeteer's page.close goes on waiting
+ * after the target is gone, for the tab's parent target, which
+ * the browser never announces, and letting go at the destroyed
+ * event left that wait with nothing behind it. The Page's close
+ * event fires off the very promise page.close awaits, so the
+ * caller's continuation runs before the loop can go idle, and
+ * whatever it starts next takes its own hold.
+ *
+ * A freshly spawned child holds the loop, so the browser starts
+ * out held and is let go by the settle that follows, unless a
+ * lease is already waiting on it.
+ */
+function watchTabs(state: SharedBrowserState, browser: Browser): void {
+	const tabs = new Set<Target>();
+	state.tabs = tabs;
+	state.heldFor = browser;
+	const forget = (target: Target): void => {
+		if (tabs.delete(target)) settleEventLoop(state);
+	};
+	browser.on("targetcreated", (target: Target) => {
+		if (target.type() !== "page") return;
+		tabs.add(target);
+		settleEventLoop(state);
+		target.page().then(
+			(page) => {
+				if (!page || page.isClosed()) forget(target);
+				else page.once("close", () => forget(target));
+			},
+			// A tab that closed before it could be read has nothing
+			// left to wait on.
+			() => forget(target),
+		);
+	});
+	browser.on("disconnected", () => {
+		tabs.clear();
+		settleEventLoop(state);
+	});
+	settleEventLoop(state);
+}
+
+/**
+ * Hold the event loop exactly while something waits on the
+ * browser, and let it go the moment nothing does.
+ *
+ * The browser is kept warm between uses, and an idle one must not
+ * keep a finished script running (see releaseEventLoop). But
+ * Chrome's pipes carry every answer puppeteer waits for, so while
+ * work is in flight they are the reason to stay alive. Letting go
+ * for good at launch meant a web_read or web_search with nothing
+ * else ref'd exited mid-load with code 13 and no answer.
+ *
+ * Demand is what is in flight: page acquisitions, open consumer
+ * tabs, and holdWhile claims, a teardown's among them.
+ */
+function settleEventLoop(state: SharedBrowserState): void {
+	const browser = state.browser;
+	if (!browser) return;
+	const demand =
+		(state.pending ?? 0) + (state.claims ?? 0) + (state.tabs?.size ?? 0);
+	const held = state.heldFor === browser;
+	if (demand > 0 && !held) {
+		holdEventLoop(browser.process());
+		state.heldFor = browser;
+	} else if (demand === 0 && held) {
+		releaseEventLoop(browser.process());
+		state.heldFor = undefined;
 	}
 }
 
@@ -998,11 +1106,14 @@ async function runClose(state: SharedBrowserState): Promise<void> {
 	// held open by a browser nobody is using; but a close in
 	// progress is work worth staying alive for, and without this
 	// Node exited mid-teardown and the caller's await never
-	// settled. Symmetry with releaseEventLoop at launch.
-	holdEventLoop(proc);
+	// settled. It is a claim rather than a bare hold, so the tabs
+	// the close destroys cannot settle the loop back to released
+	// halfway through.
 	const pid = proc?.pid;
 	const dir = ownProfileDir();
 	let closedGracefully = false;
+	state.claims = (state.claims ?? 0) + 1;
+	settleEventLoop(state);
 	try {
 		if (b.connected) {
 			await b.close();
@@ -1021,6 +1132,9 @@ async function runClose(state: SharedBrowserState): Promise<void> {
 			killTree(proc);
 		}
 		state.browser = undefined;
+		state.tabs = undefined;
+		state.heldFor = undefined;
+		state.claims = (state.claims ?? 1) - 1;
 		// Reclaim the profile only once the process is gone: a clean close,
 		// or a post-teardown check that no longer finds it. Otherwise keep
 		// the dir so the next run's reaper still has a handle to a survivor.
@@ -1062,4 +1176,6 @@ export function killBrowserSync(): void {
 		}
 	}
 	state.browser = undefined;
+	state.tabs = undefined;
+	state.heldFor = undefined;
 }
