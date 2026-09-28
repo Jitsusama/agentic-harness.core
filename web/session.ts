@@ -51,7 +51,8 @@ import {
 	type WalkCapture,
 	type WalkStop,
 } from "./a11y/index.js";
-import { newContextPage } from "./browser.js";
+import { bounded } from "./bound.js";
+import { holdWhile, newContextPage } from "./browser.js";
 import { compareImages, readPng } from "./compare/images.js";
 import type { Comparison } from "./compare/index.js";
 import {
@@ -391,6 +392,9 @@ export interface Inspection {
  */
 const SETTLE_CAP_MS = 2000;
 
+/** How long past its own cap the transition probe may run. */
+const SETTLE_CAP_SLACK_MS = 500;
+
 /** An inspection, or the refusal that stopped it. */
 export type InspectResult =
 	| { readonly ok: true; readonly inspection: Inspection }
@@ -671,7 +675,7 @@ export class BrowserSession {
 		} catch (err) {
 			// Do not leak the context if the CDP channel could not be
 			// set up; close it before surfacing the failure.
-			await context.close().catch(() => {});
+			await holdWhile(() => context.close()).catch(() => {});
 			throw err;
 		}
 	}
@@ -1012,9 +1016,12 @@ export class BrowserSession {
 	private async recover(): Promise<void> {
 		// The dead page will not answer, but closing it does work,
 		// and leaving it would leak a renderer for the session's life.
-		await this.page.close().catch(() => {});
-
-		await this.bindTo(await this.context.newPage());
+		// Between the old tab closing and the new one opening the
+		// session has no tab holding the event loop, so it claims one.
+		await holdWhile(async () => {
+			await this.page.close().catch(() => {});
+			await this.bindTo(await this.context.newPage());
+		});
 	}
 
 	/**
@@ -3041,8 +3048,10 @@ export class BrowserSession {
 			// The session may already be gone; closing the context is enough.
 		}
 		// Closing the context disposes its pages along with the
-		// cookies, storage and cache they accumulated.
-		await this.context.close();
+		// cookies, storage and cache they accumulated. Chrome
+		// answers that only after the tabs are gone, so the wait is
+		// claimed, or nothing would be holding the event loop for it.
+		await holdWhile(() => this.context.close());
 	}
 
 	/**
@@ -3939,13 +3948,22 @@ export class BrowserSession {
 	 */
 	private async settleForcedState(objectId: string): Promise<void> {
 		try {
-			await this.cdp.send("Runtime.callFunctionOn", {
-				objectId,
-				functionDeclaration: SETTLE_PROBE,
-				arguments: [{ value: SETTLE_CAP_MS }],
-				awaitPromise: true,
-				returnByValue: true,
-			});
+			// The probe caps itself on the page's own timer, which a
+			// page that runs no script never fires, so the cap is kept
+			// here as well.
+			await bounded(
+				this.cdp.send("Runtime.callFunctionOn", {
+					objectId,
+					functionDeclaration: SETTLE_PROBE,
+					arguments: [{ value: SETTLE_CAP_MS }],
+					awaitPromise: true,
+					returnByValue: true,
+				}),
+				{
+					wallMs: SETTLE_CAP_MS + SETTLE_CAP_SLACK_MS,
+					what: "waiting for transitions",
+				},
+			);
 		} catch {
 			// A reading taken early is worse than one taken late, but
 			// neither is worth abandoning the inspection over.

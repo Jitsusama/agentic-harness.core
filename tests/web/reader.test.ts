@@ -316,7 +316,7 @@ describe("capturePage", () => {
 		expect(cap.title).toBe("Fallback Title");
 	});
 
-	it("honours a cancelled signal", async () => {
+	it("honours a cancelled signal, and says it was cancelled", async () => {
 		const controller = new AbortController();
 		controller.abort();
 		await expect(
@@ -326,6 +326,6 @@ describe("capturePage", () => {
 				controller.signal,
 				deps,
 			),
-		).rejects.toThrow("Aborted");
+		).rejects.toThrow(expect.objectContaining({ name: "AbortError" }));
 	});
 });

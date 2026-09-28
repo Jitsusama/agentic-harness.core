@@ -8,6 +8,7 @@
  * agree or the budget runs out.
  */
 
+import { bounded, WallClockExceeded } from "../bound.js";
 import type { NetworkRequest } from "../telemetry/index.js";
 import {
 	inFlight,
@@ -33,6 +34,34 @@ function isSettled(value: unknown): value is Settled {
 		typeof candidate.waitedMs === "number" &&
 		typeof candidate.mutations === "number"
 	);
+}
+
+/**
+ * How far past its own deadline the page-side probe may run before
+ * it is taken as never going to answer. The probe counts its deadline
+ * out on the page's own timer, and a page that runs no script never
+ * fires one, so the bound has to be kept here as well.
+ */
+const PROBE_SLACK_MS = 500;
+
+/**
+ * How long a page with a free main thread gets to fire a zero-delay
+ * timer before it is taken as running no script at all.
+ */
+const TIMER_PROBE_MS = 500;
+
+/** Why a capped probe came back empty. */
+type Silence = "no-script" | "busy";
+
+/** A probe that did not answer in the time it was given. */
+const LATE = Symbol("late");
+
+/** A probe that can never answer, because the page runs no script. */
+const NO_SCRIPT = Symbol("no script");
+
+/** Wait here, since the page may be one whose timers never fire. */
+function pause(ms: number): Promise<void> {
+	return new Promise((wake) => setTimeout(wake, ms));
 }
 
 /** The wait between a change and an honest reading of it. */
@@ -84,12 +113,22 @@ export class PageSettler {
 		// So both have to hold at once, and since satisfying one can
 		// disturb the other, they are rechecked together until they
 		// agree or the budget runs out.
+		let scriptless = false;
 		while (Date.now() - started < budgetMs) {
 			const left = budgetMs - (Date.now() - started);
-			const outcome = await this.wires
-				.page()
-				.evaluate(settleSource(SETTLE_QUIET_MS, left))
-				.catch(() => undefined);
+			if (scriptless) {
+				// Nothing in the page can change it, so only the
+				// network is left to wait on.
+				quiet = inFlight(this.requests()).length === 0;
+				if (quiet) break;
+				await pause(Math.min(SETTLE_QUIET_MS, left));
+				continue;
+			}
+			const outcome = await this.probe(left);
+			if (outcome === NO_SCRIPT) {
+				scriptless = true;
+				continue;
+			}
 			if (isSettled(outcome)) {
 				mutations += outcome.mutations;
 				quiet = outcome.quiet;
@@ -109,5 +148,57 @@ export class PageSettler {
 			mutations,
 		};
 		return this.last;
+	}
+
+	/**
+	 * Run the page-side settle probe for at most `left`, with its
+	 * deadline kept here as well as on the page.
+	 *
+	 * A probe that has not answered by the time a quiet page would
+	 * have is asked why. A page that runs no script can never answer,
+	 * and finding that out now rather than at the end of the budget
+	 * is the difference between a navigation taking one second and
+	 * taking three. A page that is merely busy is waited on as before.
+	 */
+	private async probe(left: number): Promise<unknown> {
+		const probe = this.wires
+			.page()
+			.evaluate(settleSource(SETTLE_QUIET_MS, left));
+		const started = Date.now();
+		const within = (wallMs: number) =>
+			bounded(probe, { wallMs, what: "waiting for the page" }).catch(
+				(err: unknown) => (err instanceof WallClockExceeded ? LATE : undefined),
+			);
+		const early = await within(
+			Math.min(SETTLE_QUIET_MS + PROBE_SLACK_MS, left + PROBE_SLACK_MS),
+		);
+		if (early !== LATE) return early;
+		if ((await this.silence()) === "no-script") return NO_SCRIPT;
+		// Asking may have outlasted the deadline, but an answer that
+		// arrived meanwhile is still the answer, so look once more.
+		const rest = left + PROBE_SLACK_MS - (Date.now() - started);
+		const late = await within(Math.max(rest, 0));
+		return late === LATE ? undefined : late;
+	}
+
+	/**
+	 * Tell a page that runs no script from one too busy to answer.
+	 *
+	 * A response carrying the CSP sandbox directive runs no script,
+	 * and to Chrome a timer's callback is script, so its timers never
+	 * fire even though an evaluate still runs at once. A page whose
+	 * main thread is blocked answers neither, and is still changing.
+	 */
+	private async silence(): Promise<Silence> {
+		const page = this.wires.page();
+		const answers = (work: Promise<unknown>): Promise<boolean> =>
+			bounded(work, { wallMs: TIMER_PROBE_MS, what: "probing the page" }).then(
+				() => true,
+				() => false,
+			);
+		if (await answers(page.evaluate("new Promise((r) => setTimeout(r, 0))"))) {
+			return "busy";
+		}
+		return (await answers(page.evaluate("0"))) ? "no-script" : "busy";
 	}
 }

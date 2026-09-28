@@ -18,8 +18,16 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { clearTimeout, setTimeout } from "node:timers";
-import type { Browser, BrowserContext, Page } from "puppeteer-core";
+import type {
+	Browser,
+	BrowserContext,
+	CookieData,
+	Page,
+	Target,
+} from "puppeteer-core";
 import { processGlobal } from "../internal/process-global.js";
+import { abortError, type Bounds, bounded } from "./bound.js";
+import { CookieJar, cookieData } from "./jar.js";
 
 /**
  * puppeteer, loaded when a browser is first launched or joined rather
@@ -340,6 +348,14 @@ interface SharedBrowserState {
 	closing?: Promise<void>;
 	/** Count of page acquisitions in flight, so an idle close defers to them. */
 	pending?: number;
+	/** Count of holdWhile calls in flight, including a teardown's own. */
+	claims?: number;
+	/** Consumer tabs open in the current browser, seen since its launch. */
+	tabs?: Set<Target>;
+	/** The browser whose handles are ref'd right now, if any. */
+	heldFor?: Browser;
+	/** Cookies one-off reads carry between their contexts, per launch. */
+	jar?: CookieJar;
 	lifecycleInstalled?: boolean;
 	idle?: IdleCloser;
 }
@@ -689,7 +705,6 @@ async function launchOnce(executablePath: string): Promise<Browser> {
 	// Record ownership so a later run can tell our live Chrome from an
 	// orphan and know exactly which pid to reap.
 	writeOwnerRecord(profileDir, browserPid, wsEndpoint);
-	releaseEventLoop(browser.process());
 	return browser;
 }
 
@@ -838,6 +853,10 @@ export async function getBrowser(): Promise<Browser> {
 	state.launching = launchBrowser();
 	try {
 		state.browser = await state.launching;
+		watchTabs(state, state.browser);
+		// A fresh profile has none of the old one's cookies, so the
+		// reads that share them start again too.
+		state.jar = new CookieJar();
 		idleCloser().touch();
 		return state.browser;
 	} finally {
@@ -932,6 +951,136 @@ export async function newContextPage(): Promise<{
 	});
 }
 
+/**
+ * How long a one-off tab's close may take. Closing is one round trip
+ * and normally takes tens of milliseconds; this only bites when Chrome
+ * has stopped answering.
+ */
+const TAB_CLOSE_MS = 5_000;
+
+/**
+ * Do one piece of work in a tab of its own, bounded by the caller's
+ * signal and a wall clock, and always close the tab afterwards.
+ *
+ * The tab gets a browser context of its own. Puppeteer's page.close
+ * first waits for every screenshot in flight in the tab's context, so
+ * in the one shared context a single wedged capture held up every
+ * other read's close; in a context of its own it holds up nobody's.
+ *
+ * An abort ends the wait at once and reports itself as an abort. The
+ * tab is closed in the background rather than waited for, since the
+ * person has already moved on, and the loop stays held until that
+ * close is done.
+ */
+export async function withTab<T>(
+	bounds: Bounds,
+	work: (page: Page) => Promise<T>,
+): Promise<T> {
+	if (bounds.signal?.aborted) throw abortError(bounds.signal);
+	let tab: { page: Page; context: BrowserContext } | undefined;
+	let seeded: { jar: CookieJar; cookies: CookieData[] } | undefined;
+	let closing: Promise<void> | undefined;
+	let abandoned = false;
+	const close = (): Promise<void> => {
+		if (!tab) return Promise.resolve();
+		closing ??= closeContextWithin(tab.context, TAB_CLOSE_MS, seeded);
+		return closing;
+	};
+	const run = (async () => {
+		tab = await newContextPage();
+		// Given up on while the tab was still opening: nobody is left
+		// to use it.
+		if (abandoned) {
+			void close();
+			throw abortError(bounds.signal);
+		}
+		seeded = await seedFromJar(tab.context);
+		return work(tab.page);
+	})();
+	try {
+		return await bounded(run, bounds, () => {
+			abandoned = true;
+			void close();
+		});
+	} finally {
+		if (!abandoned) await close();
+	}
+}
+
+/**
+ * Close a context, but never wait longer than it deserves. A close
+ * Chrome never answers leaves the context's tabs uncounted, so a
+ * wedged tab cannot keep the process alive for the rest of its life.
+ */
+async function closeContextWithin(
+	context: BrowserContext,
+	ms: number,
+	seeded?: { jar: CookieJar; cookies: CookieData[] },
+): Promise<void> {
+	try {
+		await holdWhile(() =>
+			bounded(
+				(async () => {
+					if (seeded) await handBackToJar(context, seeded);
+					await context.close();
+				})(),
+				{ wallMs: ms, what: "closing a tab" },
+			),
+		);
+	} catch {
+		// Given up on, or already gone with its browser. Either way
+		// there is nothing left to wait for.
+		forgetContext(context);
+	}
+}
+
+/**
+ * Start a reading context with the cookies earlier reads left, and
+ * say what it was given so its changes can be told apart later.
+ */
+async function seedFromJar(
+	context: BrowserContext,
+): Promise<{ jar: CookieJar; cookies: CookieData[] } | undefined> {
+	const jar = sharedState().jar;
+	if (!jar) return undefined;
+	const cookies = jar.contents();
+	if (cookies.length === 0) return { jar, cookies };
+	try {
+		await context.setCookie(...cookies);
+		return { jar, cookies };
+	} catch {
+		// Carrying cookies over is a nicety, never a reason to fail
+		// a read. The context was given nothing, so say so, and none
+		// of the jar is taken as removed when it ends without them.
+		return { jar, cookies: [] };
+	}
+}
+
+/**
+ * Give the jar what a reading context changed. Only ever a nicety:
+ * a context that cannot be read is closed all the same.
+ */
+async function handBackToJar(
+	context: BrowserContext,
+	seeded: { jar: CookieJar; cookies: CookieData[] },
+): Promise<void> {
+	try {
+		const ended = (await context.cookies()).map(cookieData);
+		seeded.jar.absorb(seeded.cookies, ended);
+	} catch {
+		// The browser went away under us; its cookies went with it.
+	}
+}
+
+/** Stop counting a context's tabs as work in flight. */
+function forgetContext(context: BrowserContext): void {
+	const state = sharedState();
+	for (const target of state.tabs ?? []) {
+		if (target.browserContext() === context) state.tabs?.delete(target);
+	}
+	settleEventLoop(state);
+}
+
 /** Give a fresh tab the user agent we present everywhere. */
 async function dressPage(page: Page): Promise<Page> {
 	try {
@@ -955,12 +1104,114 @@ async function withLease<T>(
 	const state = sharedState();
 	// Reserve the lease synchronously, before any await.
 	state.pending = (state.pending ?? 0) + 1;
+	settleEventLoop(state);
 	try {
 		const b = await getBrowser();
 		idleCloser().touch();
 		return await acquire(b);
 	} finally {
 		state.pending = (state.pending ?? 1) - 1;
+		settleEventLoop(state);
+	}
+}
+
+/**
+ * Keep the process alive while some work waits on the browser
+ * with no tab of its own open.
+ *
+ * An open tab already holds the loop, and so does a page
+ * acquisition. What neither covers is a wait that outlives the
+ * tabs it concerns. Closing a browser context is the one that
+ * matters: Chrome reports the context's tabs destroyed before it
+ * answers the call that disposed it, so the answer would arrive
+ * with nothing holding the loop, and a script with nothing else
+ * to do exits waiting for it.
+ */
+export async function holdWhile<T>(work: () => Promise<T>): Promise<T> {
+	const state = sharedState();
+	state.claims = (state.claims ?? 0) + 1;
+	settleEventLoop(state);
+	try {
+		return await work();
+	} finally {
+		state.claims = (state.claims ?? 1) - 1;
+		settleEventLoop(state);
+	}
+}
+
+/**
+ * Count the consumer tabs a freshly launched browser opens from
+ * here on. Watching starts after launch, so the blank tab
+ * puppeteer opens with the browser is never counted: an idle
+ * browser holds nothing.
+ *
+ * A tab counts until its Page reports closed, not until its
+ * target is destroyed. Puppeteer's page.close goes on waiting
+ * after the target is gone, for the tab's parent target, which
+ * the browser never announces, and letting go at the destroyed
+ * event left that wait with nothing behind it. The Page's close
+ * event fires off the very promise page.close awaits, so the
+ * caller's continuation runs before the loop can go idle, and
+ * whatever it starts next takes its own hold.
+ *
+ * A freshly spawned child holds the loop, so the browser starts
+ * out held and is let go by the settle that follows, unless a
+ * lease is already waiting on it.
+ */
+function watchTabs(state: SharedBrowserState, browser: Browser): void {
+	const tabs = new Set<Target>();
+	state.tabs = tabs;
+	state.heldFor = browser;
+	const forget = (target: Target): void => {
+		if (tabs.delete(target)) settleEventLoop(state);
+	};
+	browser.on("targetcreated", (target: Target) => {
+		if (target.type() !== "page") return;
+		tabs.add(target);
+		settleEventLoop(state);
+		target.page().then(
+			(page) => {
+				if (!page || page.isClosed()) forget(target);
+				else page.once("close", () => forget(target));
+			},
+			// A tab that closed before it could be read has nothing
+			// left to wait on.
+			() => forget(target),
+		);
+	});
+	browser.on("disconnected", () => {
+		tabs.clear();
+		settleEventLoop(state);
+	});
+	settleEventLoop(state);
+}
+
+/**
+ * Hold the event loop exactly while something waits on the
+ * browser, and let it go the moment nothing does.
+ *
+ * The browser is kept warm between uses, and an idle one must not
+ * keep a finished script running (see releaseEventLoop). But
+ * Chrome's pipes carry every answer puppeteer waits for, so while
+ * work is in flight they are the reason to stay alive. Letting go
+ * for good at launch meant a web_read or web_search with nothing
+ * else ref'd exited mid-load with code 13 and no answer.
+ *
+ * Demand is what is in flight: page acquisitions, open consumer
+ * tabs, and holdWhile claims, a teardown's among them.
+ */
+function settleEventLoop(state: SharedBrowserState): void {
+	const browser = state.browser;
+	if (!browser) return;
+	const demand =
+		(state.pending ?? 0) + (state.claims ?? 0) + (state.tabs?.size ?? 0);
+	const held = state.heldFor === browser;
+	if (demand > 0 && !held) {
+		holdEventLoop(browser.process());
+		state.heldFor = browser;
+	} else if (demand === 0 && held) {
+		releaseEventLoop(browser.process());
+		state.heldFor = undefined;
 	}
 }
 
@@ -998,11 +1249,14 @@ async function runClose(state: SharedBrowserState): Promise<void> {
 	// held open by a browser nobody is using; but a close in
 	// progress is work worth staying alive for, and without this
 	// Node exited mid-teardown and the caller's await never
-	// settled. Symmetry with releaseEventLoop at launch.
-	holdEventLoop(proc);
+	// settled. It is a claim rather than a bare hold, so the tabs
+	// the close destroys cannot settle the loop back to released
+	// halfway through.
 	const pid = proc?.pid;
 	const dir = ownProfileDir();
 	let closedGracefully = false;
+	state.claims = (state.claims ?? 0) + 1;
+	settleEventLoop(state);
 	try {
 		if (b.connected) {
 			await b.close();
@@ -1021,6 +1275,9 @@ async function runClose(state: SharedBrowserState): Promise<void> {
 			killTree(proc);
 		}
 		state.browser = undefined;
+		state.tabs = undefined;
+		state.heldFor = undefined;
+		state.claims = (state.claims ?? 1) - 1;
 		// Reclaim the profile only once the process is gone: a clean close,
 		// or a post-teardown check that no longer finds it. Otherwise keep
 		// the dir so the next run's reaper still has a handle to a survivor.
@@ -1062,4 +1319,6 @@ export function killBrowserSync(): void {
 		}
 	}
 	state.browser = undefined;
+	state.tabs = undefined;
+	state.heldFor = undefined;
 }
