@@ -100,6 +100,41 @@ describe("runSideCompletion against a fake completion backend", () => {
 		expect(result.usage?.totalTokens).toBe(2);
 	});
 
+	it("passes a null header through, since pi reads it as suppressing a default", async () => {
+		const suppressing: CompletionRegistry = {
+			getAvailable: () => [glm],
+			find: () => undefined,
+			getApiKeyAndHeaders: async () => ({
+				ok: true,
+				headers: { "x-kept": "v", "x-default": null },
+			}),
+		};
+		let sent: unknown;
+		const complete: CompleteSimple = async (_model, _context, options) => {
+			sent = options.headers;
+			return {
+				content: [{ type: "text", text: "ok" }],
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "end",
+			};
+		};
+
+		await runSideCompletion(
+			suppressing,
+			{ systemPrompt: "s", prompt: "hi" },
+			complete,
+		);
+
+		expect(sent).toEqual({ "x-kept": "v", "x-default": null });
+	});
+
 	it("reports not-ok when the completion itself errors", async () => {
 		const complete: CompleteSimple = async () => ({
 			content: [],

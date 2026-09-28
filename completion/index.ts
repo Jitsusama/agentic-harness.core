@@ -32,6 +32,7 @@ export {
 export type {
 	CompatModule,
 	CompleteSimple,
+	CompletionHeaders,
 	CompletionMessage,
 	CompletionRegistry,
 } from "./types.js";

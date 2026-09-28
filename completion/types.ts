@@ -46,10 +46,18 @@ export interface CompletionContext {
 	readonly messages: CompletionMessage[];
 }
 
+/**
+ * Request headers as pi's registry resolves them. A null value is
+ * not an absent one: pi reads it as suppressing a provider default
+ * header of the same name, so it has to reach the completion call
+ * as it came rather than be dropped on the way.
+ */
+export type CompletionHeaders = Record<string, string | null>;
+
 /** Request auth resolved from the model registry. */
 export interface CompletionAuth {
 	readonly apiKey?: string;
-	readonly headers?: Record<string, string>;
+	readonly headers?: CompletionHeaders;
 	readonly env?: Record<string, string>;
 }
 
@@ -85,7 +93,7 @@ export interface CompletionRegistry {
 		| {
 				ok: true;
 				apiKey?: string;
-				headers?: Record<string, string>;
+				headers?: CompletionHeaders;
 				env?: Record<string, string>;
 		  }
 		| { ok: false; error: string }

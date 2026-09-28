@@ -99,6 +99,34 @@ describe("runInvestigation against a fake completion backend", () => {
 		expect(result.steps).toBe(1);
 	});
 
+	it("passes a null header through, since pi reads it as suppressing a default", async () => {
+		const suppressing: CompletionRegistry = {
+			getAvailable: () => [glm],
+			find: () => undefined,
+			getApiKeyAndHeaders: async () => ({
+				ok: true,
+				headers: { "x-kept": "v", "x-default": null },
+			}),
+		};
+		let sent: unknown;
+		const complete: CompleteSimple = async (_model, _context, options) => {
+			sent = options.headers;
+			return {
+				content: [{ type: "text", text: "ok" }],
+				usage: ZERO_USAGE,
+				stopReason: "end",
+			};
+		};
+
+		await runInvestigation(
+			suppressing,
+			{ systemPrompt: "s", messages: [], tools: [], maxSteps: 1 },
+			complete,
+		);
+
+		expect(sent).toEqual({ "x-kept": "v", "x-default": null });
+	});
+
 	it("runs a tool call, feeds the result back, and answers on the next step", async () => {
 		let step = 0;
 		const complete: CompleteSimple = async (_model, context) => {
