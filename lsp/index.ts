@@ -41,6 +41,7 @@ export type {
 	HoverInfo,
 	LspBackend,
 	LspBackendEntry,
+	LspCallOptions,
 	LspLocation,
 	LspPosition,
 	LspRange,

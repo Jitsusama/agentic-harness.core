@@ -83,6 +83,16 @@ export interface CodeAction {
 }
 
 /**
+ * What a caller can say about one call. A backend that cannot stop
+ * its work early may ignore the signal, so a caller that must not
+ * wait past it bounds the call itself as well.
+ */
+export interface LspCallOptions {
+	/** The caller giving up. The call ends, and the server is told. */
+	readonly signal?: AbortSignal;
+}
+
+/**
  * A registered backend and the rule for when it may serve.
  * Lower priority resolves first, so a downstream backend can
  * register below the standalone default to take over when its
@@ -109,24 +119,47 @@ export interface LspBackend {
 	/** Stable name used in backend selection and messages. */
 	readonly name: string;
 	/** Problems the server reports against a file's current bytes. */
-	diagnostics(path: string): Promise<readonly Diagnostic[]>;
+	diagnostics(
+		path: string,
+		options?: LspCallOptions,
+	): Promise<readonly Diagnostic[]>;
 	/** Where the symbol under the target is defined. */
-	definition(target: LspTarget): Promise<readonly LspLocation[]>;
+	definition(
+		target: LspTarget,
+		options?: LspCallOptions,
+	): Promise<readonly LspLocation[]>;
 	/** Every reference to the symbol under the target. */
-	references(target: LspTarget): Promise<readonly LspLocation[]>;
+	references(
+		target: LspTarget,
+		options?: LspCallOptions,
+	): Promise<readonly LspLocation[]>;
 	/** Documentation for the symbol under the target, or null. */
-	hover(target: LspTarget): Promise<HoverInfo | null>;
+	hover(target: LspTarget, options?: LspCallOptions): Promise<HoverInfo | null>;
 	/** Symbols declared in one file. */
-	documentSymbols(path: string): Promise<readonly SymbolInfo[]>;
+	documentSymbols(
+		path: string,
+		options?: LspCallOptions,
+	): Promise<readonly SymbolInfo[]>;
 	/** Symbols across the project matching a query. */
-	workspaceSymbols(query: string): Promise<readonly SymbolInfo[]>;
+	workspaceSymbols(
+		query: string,
+		options?: LspCallOptions,
+	): Promise<readonly SymbolInfo[]>;
 	/**
 	 * Rename the symbol under the target across its root and
 	 * apply the edits, returning what changed.
 	 */
-	rename(target: LspTarget, newName: string): Promise<WorkspaceEdit>;
+	rename(
+		target: LspTarget,
+		newName: string,
+		options?: LspCallOptions,
+	): Promise<WorkspaceEdit>;
 	/** Code actions the server offers for a file, optionally at a range. */
-	codeActions(path: string, range?: LspRange): Promise<readonly CodeAction[]>;
+	codeActions(
+		path: string,
+		range?: LspRange,
+		options?: LspCallOptions,
+	): Promise<readonly CodeAction[]>;
 	/** Release every server the backend holds open. */
 	dispose(): Promise<void>;
 }
