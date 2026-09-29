@@ -12,3 +12,10 @@ export {
 	type ProviderDeps,
 	run,
 } from "./exec.js";
+export {
+	EXIT_ABORTED,
+	EXIT_TIMED_OUT,
+	NONINTERACTIVE_ENV,
+	type SpawnExecOptions,
+	spawnExec,
+} from "./spawn.js";
