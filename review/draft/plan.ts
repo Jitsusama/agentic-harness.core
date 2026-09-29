@@ -303,9 +303,8 @@ function planReview(
 	);
 
 	for (const finding of findings) {
-		itemIds.push(finding.id);
-
 		if (!conversation.anchoredBatchReview) {
+			itemIds.push(finding.id);
 			spilled.push(finding);
 			degraded.push({
 				itemId: finding.id,
@@ -320,9 +319,12 @@ function planReview(
 		if (sorted.degradation) degraded.push(sorted.degradation);
 		if (sorted.spill) spilled.push(sorted.spill);
 		if (sorted.alone) {
+			// Its own op carries it, and it leaves the draft only when that
+			// op lands, not when the review beside it does.
 			alone.push({ comment: sorted.alone, itemId: finding.id });
 			continue;
 		}
+		itemIds.push(finding.id);
 		if (!sorted.comment) continue;
 
 		const cap = conversation.maxBatchComments;

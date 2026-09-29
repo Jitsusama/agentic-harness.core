@@ -283,6 +283,32 @@ describe("compilePlan", () => {
 			);
 		});
 
+		it("leaves a remark posted alone out of what the review carries", () => {
+			// What an op carries is what leaves the draft when it lands. A
+			// review claiming the remark beside it took that remark out of the
+			// draft even when its own post then failed or was stopped.
+			let state = addFinding(draft(), {
+				anchor: onNewLine,
+				body: "this line",
+			});
+			state = addFinding(state, {
+				anchor: { subject: "file", path: "lib/app.ts" },
+				body: "whole file problem",
+			});
+
+			const plan = compilePlan(
+				state,
+				context({ fileLevelComments: "standalone" }),
+			);
+
+			const review = plan.ops.find((op) => op.kind === "review");
+			const alone = plan.ops.find((op) => op.kind === "commentOn");
+			const aloneIds = alone?.itemIds ?? [];
+			expect(aloneIds).toHaveLength(1);
+			expect(review?.itemIds.filter((id) => aloneIds.includes(id))).toEqual([]);
+			expect(review?.itemIds).toHaveLength(1);
+		});
+
 		it("calls that no degradation, since nothing about the remark changed", () => {
 			// It lands where it was aimed, said by the same person about the same
 			// file. Which request carries it is the provider's business.
