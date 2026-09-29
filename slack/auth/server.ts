@@ -2,10 +2,7 @@
  * Local HTTP server for the Slack OAuth2 callback.
  */
 
-import * as http from "node:http";
-
-/** Timeout before the OAuth callback server gives up (5 minutes). */
-const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000;
+import { escapeHtml, waitForRedirect } from "../../internal/oauth-redirect.js";
 
 /** Result from the local OAuth2 callback: either an auth code or an error. */
 export interface OAuthCallbackResult {
@@ -50,7 +47,7 @@ function errorPage(error: string): string {
 </head>
 <body>
   <h1>✗ Slack Authentication Failed</h1>
-  <p>Error: ${error || "Unknown error"}</p>
+  <p>Error: ${escapeHtml(error || "Unknown error")}</p>
   <p>Please try again.</p>
 </body>
 </html>`;
@@ -58,38 +55,21 @@ function errorPage(error: string): string {
 
 /**
  * Start a local server to handle the Slack OAuth callback.
- * Resolves when the callback arrives or times out.
+ * Resolves when the callback arrives; rejects when it times out, or with
+ * an `AbortError` when `signal` fires, and frees the port either way.
  */
-export function waitForOAuthCallback(
+export async function waitForOAuthCallback(
 	port: number,
+	options: { signal?: AbortSignal } = {},
 ): Promise<OAuthCallbackResult> {
-	return new Promise((resolve, reject) => {
-		const server = http.createServer((req, res) => {
-			const url = new URL(req.url || "", `http://localhost:${port}`);
-			const code = url.searchParams.get("code");
-			const state = url.searchParams.get("state");
-			const error = url.searchParams.get("error");
-
-			res.writeHead(200, { "Content-Type": "text/html" });
-			res.end(code ? SUCCESS_PAGE : errorPage(error || ""));
-
-			server.close();
-			resolve({
-				code: code || undefined,
-				state: state || undefined,
-				error: error || undefined,
-			});
-		});
-
-		server.on("error", (err) => {
-			reject(err);
-		});
-
-		server.listen(port, "localhost");
-
-		setTimeout(() => {
-			server.close();
-			reject(new Error("OAuth callback timeout after 5 minutes"));
-		}, CALLBACK_TIMEOUT_MS);
+	const query = await waitForRedirect(port, {
+		signal: options.signal,
+		success: SUCCESS_PAGE,
+		failure: errorPage,
 	});
+	return {
+		code: query.get("code") || undefined,
+		state: query.get("state") || undefined,
+		error: query.get("error") || undefined,
+	};
 }
