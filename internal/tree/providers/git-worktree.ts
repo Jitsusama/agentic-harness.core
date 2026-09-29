@@ -14,12 +14,17 @@
  * provider returns true for any directory inside a git
  * working tree, so downstream packages register at lower
  * priority to take over for specific repos.
+ *
+ * Every operation runs its git unattended, under one clock for the
+ * whole operation and the caller's signal. `git worktree add` runs
+ * the repo's checkout hooks, and a hook waiting on the network held
+ * `tree-add` with nothing anybody could press.
  */
 
-import { execFile } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { abortError, WallClockExceeded } from "../../../clock/bound.js";
+import { spawnExec } from "../../../exec/spawn.js";
 import type {
 	CreateTreeInput,
 	PruneTreeInput,
@@ -27,11 +32,74 @@ import type {
 	TreeProvider,
 } from "../../../tree/types.js";
 
-const execFileAsync = promisify(execFile);
-
 const PROVIDER_ID = "git-worktree";
 const DEFAULT_PRIORITY = 100;
 const WORKTREES_DIR = ".worktrees";
+
+/**
+ * How long one operation may take, all of its git together. Generous,
+ * since a first checkout of a large repo is slow, but finite.
+ */
+export const TREE_WALL_MS = 10 * 60 * 1000;
+
+/**
+ * How long tidying up after a stopped cut may take. Short, because the
+ * caller has already given up and is waiting only for this.
+ */
+const TIDY_WALL_MS = 10_000;
+
+/** How the provider is bounded. */
+export interface GitWorktreeOptions {
+	/** The longest one operation may run. `TREE_WALL_MS` when absent. */
+	wallMs?: number;
+}
+
+/**
+ * One operation's bounds: the caller's signal and a clock, folded into
+ * the one signal every git call in the operation runs under, with the
+ * reason it fired kept so the caller hears which of the two it was.
+ */
+interface Operation {
+	readonly signal: AbortSignal;
+	/** Why the operation was stopped, or undefined while it may run. */
+	stopped(): Error | undefined;
+	/** Let go of the clock and the caller's signal. */
+	end(): void;
+}
+
+function operation(
+	what: string,
+	wallMs: number,
+	caller?: AbortSignal,
+): Operation {
+	const controller = new AbortController();
+	let why: Error | undefined;
+	const stop = (reason: Error): void => {
+		why ??= reason;
+		controller.abort(why);
+	};
+	const onAbort = (): void => stop(abortError(caller));
+	if (caller?.aborted) onAbort();
+	else caller?.addEventListener("abort", onAbort, { once: true });
+	const clock = setTimeout(
+		() => stop(new WallClockExceeded(what, wallMs)),
+		wallMs,
+	);
+	return {
+		signal: controller.signal,
+		stopped: () => why,
+		end() {
+			clearTimeout(clock);
+			caller?.removeEventListener("abort", onAbort);
+		},
+	};
+}
+
+/** Throw the reason an operation was stopped, if it was. */
+function assertRunning(op: Operation): void {
+	const why = op.stopped();
+	if (why) throw why;
+}
 
 /**
  * Slug pattern for tree names and base branches that
@@ -60,33 +128,84 @@ function assertValidName(label: string, value: string): void {
 
 /**
  * Run a git command in a directory and return stdout
- * trimmed. Throws on non-zero exit.
+ * trimmed. Throws on non-zero exit, and throws the
+ * operation's reason when it was stopped.
  */
-async function git(cwd: string, ...args: string[]): Promise<string> {
-	const { stdout } = await execFileAsync("git", args, { cwd });
-	return stdout.toString().trim();
+async function git(
+	op: Operation,
+	cwd: string,
+	...args: string[]
+): Promise<string> {
+	const result = await spawnExec({ signal: op.signal, cwd })("git", args);
+	if (result.code !== 0) {
+		throw (
+			op.stopped() ??
+			new Error(
+				`Command failed: git ${args.join(" ")}\n${result.stderr.trim()}`,
+			)
+		);
+	}
+	return result.stdout.trim();
 }
 
 /**
  * Try a git command; return undefined on failure rather
  * than throwing. Used for probes where "not a git repo"
- * is a legitimate answer.
+ * is a legitimate answer. Being stopped is not an answer,
+ * so that still throws.
  */
 async function tryGit(
+	op: Operation,
 	cwd: string,
 	...args: string[]
 ): Promise<string | undefined> {
 	try {
-		return await git(cwd, ...args);
-	} catch {
+		return await git(op, cwd, ...args);
+	} catch (error) {
+		if (op.stopped()) throw error;
 		// Probe failed; caller treats this as "no answer".
 		return undefined;
 	}
 }
 
+/**
+ * Take back a tree whose cut was stopped part way.
+ *
+ * Git clears its own junk flag once the checkout is done and before
+ * `post-checkout` runs, so a cut stopped in a hook leaves a finished
+ * worktree and its branch behind, which the next `tree-add` under that
+ * name then refuses over. The directory did not exist before this cut,
+ * so it is ours to remove, and so is the branch unless it was already
+ * there. Best effort under a short clock of its own: the caller's
+ * signal has already fired, and nothing here runs a hook.
+ */
+async function tidyStoppedCut(
+	repoRoot: string,
+	treePath: string,
+	branch: string | undefined,
+): Promise<void> {
+	const tidy = operation(`tidying ${treePath}`, TIDY_WALL_MS);
+	try {
+		// Twice forced, because a cut stopped early is still locked.
+		await tryGit(tidy, repoRoot, "worktree", "remove", "-f", "-f", treePath);
+		rmSync(treePath, { recursive: true, force: true });
+		await tryGit(tidy, repoRoot, "worktree", "prune");
+		if (branch) await tryGit(tidy, repoRoot, "branch", "-D", branch);
+	} catch {
+		// The tidy clock ran out. What is left is what a killed git
+		// leaves, and the original stop is the error worth reporting.
+	} finally {
+		tidy.end();
+	}
+}
+
 /** Determine the repo's default branch. */
-async function detectDefaultBranch(repoRoot: string): Promise<string> {
+async function detectDefaultBranch(
+	op: Operation,
+	repoRoot: string,
+): Promise<string> {
 	const headRef = await tryGit(
+		op,
 		repoRoot,
 		"symbolic-ref",
 		"refs/remotes/origin/HEAD",
@@ -94,12 +213,18 @@ async function detectDefaultBranch(repoRoot: string): Promise<string> {
 	if (headRef?.startsWith("refs/remotes/origin/")) {
 		return headRef.slice("refs/remotes/origin/".length);
 	}
-	const main = await tryGit(repoRoot, "rev-parse", "--verify", "main");
+	const main = await tryGit(op, repoRoot, "rev-parse", "--verify", "main");
 	if (main) return "main";
-	const master = await tryGit(repoRoot, "rev-parse", "--verify", "master");
+	const master = await tryGit(op, repoRoot, "rev-parse", "--verify", "master");
 	if (master) return "master";
 	// As a last resort, return HEAD's current branch.
-	const current = await tryGit(repoRoot, "rev-parse", "--abbrev-ref", "HEAD");
+	const current = await tryGit(
+		op,
+		repoRoot,
+		"rev-parse",
+		"--abbrev-ref",
+		"HEAD",
+	);
 	return current ?? "main";
 }
 
@@ -125,8 +250,8 @@ function ensureGitignore(repoRoot: string): void {
  * `git status --porcelain` produces one line per dirty
  * file. Empty stdout means the tree is clean.
  */
-async function isDirty(treePath: string): Promise<boolean> {
-	const status = await tryGit(treePath, "status", "--porcelain");
+async function isDirty(op: Operation, treePath: string): Promise<boolean> {
+	const status = await tryGit(op, treePath, "status", "--porcelain");
 	return Boolean(status && status.length > 0);
 }
 
@@ -143,14 +268,16 @@ async function isDirty(treePath: string): Promise<boolean> {
  * unmerged work in a repo with no origin remote.
  */
 async function hasUnmergedCommits(
+	op: Operation,
 	repoRoot: string,
 	branch: string,
 ): Promise<{ unmerged: boolean; comparedAgainst: string | undefined }> {
-	const defaultBranch = await detectDefaultBranch(repoRoot);
+	const defaultBranch = await detectDefaultBranch(op, repoRoot);
 	if (defaultBranch === branch) {
 		return { unmerged: false, comparedAgainst: defaultBranch };
 	}
 	const originAhead = await tryGit(
+		op,
 		repoRoot,
 		"rev-list",
 		"--count",
@@ -163,6 +290,7 @@ async function hasUnmergedCommits(
 		};
 	}
 	const localAhead = await tryGit(
+		op,
 		repoRoot,
 		"rev-list",
 		"--count",
@@ -183,7 +311,9 @@ async function hasUnmergedCommits(
 /** Build the provider. */
 export function createGitWorktreeProvider(
 	priority = DEFAULT_PRIORITY,
+	options: GitWorktreeOptions = {},
 ): TreeProvider {
+	const wallMs = options.wallMs ?? TREE_WALL_MS;
 	return {
 		id: PROVIDER_ID,
 		priority,
@@ -206,22 +336,54 @@ export function createGitWorktreeProvider(
 					`A tree already exists at ${treePath}. Pick a different name or prune the existing one first.`,
 				);
 			}
-			ensureGitignore(repoRoot);
-			const base = input.baseBranch ?? (await detectDefaultBranch(repoRoot));
-			// `--` separates positional args from refs so a base
-			// or branch name that happens to start with a dash
-			// (already refused by assertValidName) cannot be
-			// reparsed as a flag by older git versions.
-			await git(
-				repoRoot,
-				"worktree",
-				"add",
-				"-b",
-				input.name,
-				treePath,
-				"--",
-				base,
-			);
+			const op = operation(`cutting ${treePath}`, wallMs, input.signal);
+			try {
+				assertRunning(op);
+				ensureGitignore(repoRoot);
+				const base =
+					input.baseBranch ?? (await detectDefaultBranch(op, repoRoot));
+				// Known before the cut, so a stopped one deletes only a
+				// branch it made itself.
+				const branchWasThere =
+					(await tryGit(
+						op,
+						repoRoot,
+						"rev-parse",
+						"--verify",
+						"--quiet",
+						`refs/heads/${input.name}`,
+					)) !== undefined;
+				try {
+					// `--` separates positional args from refs so a base
+					// or branch name that happens to start with a dash
+					// (already refused by assertValidName) cannot be
+					// reparsed as a flag by older git versions.
+					await git(
+						op,
+						repoRoot,
+						"worktree",
+						"add",
+						"-b",
+						input.name,
+						treePath,
+						"--",
+						base,
+					);
+				} catch (error) {
+					// Only a stop leaves anything: a cut git itself refused
+					// is one git has already cleaned up after.
+					if (op.stopped()) {
+						await tidyStoppedCut(
+							repoRoot,
+							treePath,
+							branchWasThere ? undefined : input.name,
+						);
+					}
+					throw error;
+				}
+			} finally {
+				op.end();
+			}
 			return {
 				path: treePath,
 				branch: input.name,
@@ -231,112 +393,139 @@ export function createGitWorktreeProvider(
 		},
 		async prune(input: PruneTreeInput): Promise<void> {
 			const treePath = resolve(input.path);
-			if (!existsSync(treePath)) {
-				// Tree directory is gone but git's admin entry
-				// may still be around. Walk up looking for the
-				// containing repo so we can run
-				// `git worktree prune` against it. When we
-				// can't find it, treat the prune as already
-				// done.
-				let ancestor = dirname(treePath);
-				while (ancestor !== dirname(ancestor)) {
-					if (existsSync(join(ancestor, ".git"))) {
-						await tryGit(ancestor, "worktree", "prune");
-						return;
-					}
-					ancestor = dirname(ancestor);
-				}
-				return;
-			}
-			// `--show-toplevel` from inside a worktree returns
-			// the worktree path itself, not the main repo.
-			// `--git-common-dir` always points at the shared
-			// `.git`; the main repo is its parent.
-			const commonDir = await git(treePath, "rev-parse", "--git-common-dir");
-			const absoluteCommonDir = resolve(treePath, commonDir);
-			const repoRoot = dirname(absoluteCommonDir);
-			const branch =
-				(await tryGit(treePath, "rev-parse", "--abbrev-ref", "HEAD")) ?? "";
-			if (!input.force) {
-				if (await isDirty(treePath)) {
-					throw new Error(
-						`Tree at ${treePath} has uncommitted changes. Commit, stash or force-prune.`,
-					);
-				}
-				if (branch) {
-					const { unmerged, comparedAgainst } = await hasUnmergedCommits(
-						repoRoot,
-						branch,
-					);
-					if (unmerged) {
-						const target = comparedAgainst
-							? `against ${comparedAgainst}`
-							: "and no default-branch comparison target exists (no origin remote, no local main/master)";
-						throw new Error(
-							`Branch ${branch} has commits not merged ${target}. Push and merge first, or force-prune.`,
-						);
-					}
-				}
-			}
-			await git(
-				repoRoot,
-				"worktree",
-				"remove",
-				treePath,
-				...(input.force ? ["--force"] : []),
-			);
-			if (branch) {
-				// Delete the branch when it's fully merged
-				// or the caller forced. Failures here are
-				// non-fatal: the worktree itself is gone.
-				const deleteFlag = input.force ? "-D" : "-d";
-				await tryGit(repoRoot, "branch", deleteFlag, branch);
+			const op = operation(`pruning ${treePath}`, wallMs, input.signal);
+			try {
+				assertRunning(op);
+				await pruneTree(op, treePath, input.force === true);
+			} finally {
+				op.end();
 			}
 		},
 		async list(repoRoot: string): Promise<TreeHandle[]> {
 			const root = resolve(repoRoot);
-			const stdout = await tryGit(root, "worktree", "list", "--porcelain");
-			if (!stdout) return [];
-			const handles: TreeHandle[] = [];
-			let current: Partial<TreeHandle> = {};
-			for (const line of stdout.split("\n")) {
-				if (line.startsWith("worktree ")) {
-					if (current.path) {
-						handles.push({
-							path: current.path,
-							branch: current.branch,
-							repoRoot: root,
-							providerId: PROVIDER_ID,
-						});
-					}
-					current = { path: line.slice("worktree ".length) };
-				} else if (line.startsWith("branch ")) {
-					const ref = line.slice("branch ".length);
-					current.branch = ref.replace(/^refs\/heads\//, "");
-				} else if (line === "") {
-					if (current.path) {
-						handles.push({
-							path: current.path,
-							branch: current.branch,
-							repoRoot: root,
-							providerId: PROVIDER_ID,
-						});
-						current = {};
-					}
-				}
+			const op = operation(`listing trees of ${root}`, wallMs);
+			try {
+				return parseWorktreeList(
+					root,
+					await tryGit(op, root, "worktree", "list", "--porcelain"),
+				);
+			} finally {
+				op.end();
 			}
-			if (current.path) {
-				handles.push({
-					path: current.path,
-					branch: current.branch,
-					repoRoot: root,
-					providerId: PROVIDER_ID,
-				});
-			}
-			// The first entry is always the main worktree;
-			// drop it so callers see only the
-			// `.worktrees/<name>` siblings.
-			return handles.slice(1);
 		},
 	};
+}
+
+/**
+ * Remove a tree and its branch, refusing dirty or unmerged work
+ * unless forced. A stop part way leaves the tree where it was
+ * unless `git worktree remove` itself was the call stopped.
+ */
+async function pruneTree(
+	op: Operation,
+	treePath: string,
+	force: boolean,
+): Promise<void> {
+	if (!existsSync(treePath)) {
+		// Tree directory is gone but git's admin entry
+		// may still be around. Walk up looking for the
+		// containing repo so we can run
+		// `git worktree prune` against it. When we
+		// can't find it, treat the prune as already
+		// done.
+		let ancestor = dirname(treePath);
+		while (ancestor !== dirname(ancestor)) {
+			if (existsSync(join(ancestor, ".git"))) {
+				await tryGit(op, ancestor, "worktree", "prune");
+				return;
+			}
+			ancestor = dirname(ancestor);
+		}
+		return;
+	}
+	// `--show-toplevel` from inside a worktree returns
+	// the worktree path itself, not the main repo.
+	// `--git-common-dir` always points at the shared
+	// `.git`; the main repo is its parent.
+	const commonDir = await git(op, treePath, "rev-parse", "--git-common-dir");
+	const absoluteCommonDir = resolve(treePath, commonDir);
+	const repoRoot = dirname(absoluteCommonDir);
+	const branch =
+		(await tryGit(op, treePath, "rev-parse", "--abbrev-ref", "HEAD")) ?? "";
+	if (!force) {
+		if (await isDirty(op, treePath)) {
+			throw new Error(
+				`Tree at ${treePath} has uncommitted changes. Commit, stash or force-prune.`,
+			);
+		}
+		if (branch) {
+			const { unmerged, comparedAgainst } = await hasUnmergedCommits(
+				op,
+				repoRoot,
+				branch,
+			);
+			if (unmerged) {
+				const target = comparedAgainst
+					? `against ${comparedAgainst}`
+					: "and no default-branch comparison target exists (no origin remote, no local main/master)";
+				throw new Error(
+					`Branch ${branch} has commits not merged ${target}. Push and merge first, or force-prune.`,
+				);
+			}
+		}
+	}
+	await git(
+		op,
+		repoRoot,
+		"worktree",
+		"remove",
+		treePath,
+		...(force ? ["--force"] : []),
+	);
+	if (branch) {
+		// Delete the branch when it's fully merged
+		// or the caller forced. Failures here are
+		// non-fatal: the worktree itself is gone.
+		const deleteFlag = force ? "-D" : "-d";
+		await tryGit(op, repoRoot, "branch", deleteFlag, branch);
+	}
+}
+
+/**
+ * Read `git worktree list --porcelain` into handles, leaving out
+ * the main worktree so callers see only the `.worktrees/<name>`
+ * siblings.
+ */
+function parseWorktreeList(
+	root: string,
+	stdout: string | undefined,
+): TreeHandle[] {
+	if (!stdout) return [];
+	const handles: TreeHandle[] = [];
+	let current: Partial<TreeHandle> = {};
+	const flush = (): void => {
+		if (current.path) {
+			handles.push({
+				path: current.path,
+				branch: current.branch,
+				repoRoot: root,
+				providerId: PROVIDER_ID,
+			});
+		}
+		current = {};
+	};
+	for (const line of stdout.split("\n")) {
+		if (line.startsWith("worktree ")) {
+			flush();
+			current = { path: line.slice("worktree ".length) };
+		} else if (line.startsWith("branch ")) {
+			const ref = line.slice("branch ".length);
+			current.branch = ref.replace(/^refs\/heads\//, "");
+		} else if (line === "") {
+			flush();
+		}
+	}
+	flush();
+	// The first entry is always the main worktree.
+	return handles.slice(1);
 }
