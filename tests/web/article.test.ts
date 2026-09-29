@@ -61,8 +61,13 @@ describe("extractArticle", () => {
 	});
 
 	it("leaves the event loop free while a heavy page is extracted", async () => {
+		// About a second on the main thread, four times the stall allowed,
+		// and a clock of its own: under a loaded full suite the default
+		// one ran out on a heavier page and this read as a failure.
 		const { value, stall } = await longestStall(
-			extractArticle(heavyPage(), "https://example.com/"),
+			extractArticle(heavyPage(800), "https://example.com/", {
+				wallMs: 50_000,
+			}),
 		);
 		expect(value?.wordCount).toBeGreaterThan(1_000);
 		expect(stall).toBeLessThan(250);

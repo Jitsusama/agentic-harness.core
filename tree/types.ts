@@ -38,6 +38,11 @@ export interface CreateTreeInput {
 	 * default branch when omitted.
 	 */
 	baseBranch?: string;
+	/**
+	 * The caller giving up. A provider stops whatever it started when
+	 * this fires, and leaves no half-cut tree behind.
+	 */
+	signal?: AbortSignal;
 }
 
 /** Input for `TreeProvider.prune`. */
@@ -51,6 +56,8 @@ export interface PruneTreeInput {
 	 * resolution answer through this flag.
 	 */
 	force?: boolean;
+	/** The caller giving up. A provider stops whatever it started. */
+	signal?: AbortSignal;
 }
 
 /** A pluggable working-directory provider. */

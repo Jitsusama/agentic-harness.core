@@ -187,4 +187,28 @@ describe("createTreeBroker", () => {
 		expect(general.released).toEqual(["/trees/git-worktree/1"]);
 		expect(special.released).toEqual([]);
 	});
+
+	it("hands the caller's signal to the provider on a cut, a reuse and a release", async () => {
+		const signals: (AbortSignal | undefined)[] = [];
+		const provider: TreeProvider = {
+			id: "git-worktree",
+			specificity: 0,
+			appliesTo: () => true,
+			async ensure(_request, options) {
+				signals.push(options?.signal);
+				return { path: "/trees/one" };
+			},
+			async release(_held, options) {
+				signals.push(options?.signal);
+			},
+		};
+		const broker = createTreeBroker([provider]);
+		const { signal } = new AbortController();
+
+		const held = await broker.ensure(snapshot("abc123"), { signal });
+		await broker.ensure(snapshot("abc123"), { signal });
+		await broker.release(held, { signal });
+
+		expect(signals).toEqual([signal, signal, signal]);
+	});
 });

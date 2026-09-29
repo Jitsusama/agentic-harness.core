@@ -29,7 +29,12 @@ export {
 	namingComplaints,
 	safeBranchName,
 } from "./author.js";
-export type { HeldTree, TreeBroker, TreeProvider } from "./broker.js";
+export type {
+	HeldTree,
+	TreeBroker,
+	TreeCallOptions,
+	TreeProvider,
+} from "./broker.js";
 export { createTreeBroker } from "./broker.js";
 export type { TreeClaims, WorkApi } from "./events.js";
 export {
