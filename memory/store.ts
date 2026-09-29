@@ -79,8 +79,11 @@ export async function openMemoryStore(dbPath: string): Promise<MemoryStore> {
 		async retain(input: RetainInput): Promise<Fact> {
 			const scope = serializeScope(input.scope);
 			const now = Date.now();
-			await db.run(
-				"INSERT INTO facts (scope, text, tags, source, status, created_at) VALUES (?, ?, ?, ?, 'active', ?)",
+			// The insert names the row it made. Reading back the newest row
+			// in the scope instead answered a retain with whatever another
+			// call running beside it had just saved.
+			const rows = await db.all<FactRow>(
+				"INSERT INTO facts (scope, text, tags, source, status, created_at) VALUES (?, ?, ?, ?, 'active', ?) RETURNING *",
 				[
 					scope,
 					input.text,
@@ -89,11 +92,9 @@ export async function openMemoryStore(dbPath: string): Promise<MemoryStore> {
 					now,
 				],
 			);
-			const rows = await db.all<FactRow>(
-				"SELECT * FROM facts WHERE scope = ? ORDER BY id DESC LIMIT 1",
-				[scope],
-			);
-			return rowToFact(rows[0]);
+			const made = rows[0];
+			if (!made) throw new Error("The fact was not saved.");
+			return rowToFact(made);
 		},
 
 		async recall(query: RecallQuery): Promise<Fact[]> {

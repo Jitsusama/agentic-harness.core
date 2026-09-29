@@ -201,7 +201,7 @@ export function createTreeBroker(
 		return [...trees, ...earlier];
 	};
 
-	return {
+	const unqueued: TreeBroker = {
 		unattributed() {
 			// Never this session's. Ours were stamped as they were cut, so
 			// anything unattributable came from a record on disk.
@@ -339,4 +339,80 @@ export function createTreeBroker(
 
 		cutHere: (path) => trees.some((tree) => tree.path === path),
 	};
+
+	// Cuts of one tree take turns. Two at once both miss the tree the
+	// other is making, both ask the provider for it, and both hold it,
+	// so the session lists one directory twice and a release of either
+	// copy pulls it out from under the other. After its turn a second
+	// call finds the first's tree and reuses it.
+	const cutting = new Map<string, Promise<unknown>>();
+	return {
+		...unqueued,
+		ensure: (request, options) =>
+			inTurn(cutting, treeIdentity(request).key, options?.signal, () =>
+				unqueued.ensure(request, options),
+			),
+	};
+}
+
+/**
+ * Run `fn` once every earlier call under `key` has settled. A call
+ * stopped while it waits leaves at once and never runs; one that has
+ * started is the provider's to stop, through the same signal.
+ */
+function inTurn<T>(
+	queues: Map<string, Promise<unknown>>,
+	key: string,
+	signal: AbortSignal | undefined,
+	fn: () => Promise<T>,
+): Promise<T> {
+	const before = queues.get(key) ?? Promise.resolve();
+	let waiting = true;
+	const turn = before.then(
+		() => run(),
+		() => run(),
+	);
+	function run(): Promise<T> {
+		waiting = false;
+		if (signal?.aborted) return Promise.reject(stopped());
+		return fn();
+	}
+	const settled = turn.then(
+		() => undefined,
+		() => undefined,
+	);
+	queues.set(key, settled);
+	void settled.then(() => {
+		if (queues.get(key) === settled) queues.delete(key);
+	});
+	if (!signal) return turn;
+	return new Promise<T>((resolve, reject) => {
+		const leave = (): void => {
+			if (!waiting) return;
+			// The queue still owns the turn, which will skip itself.
+			turn.catch(() => undefined);
+			reject(stopped());
+		};
+		if (signal.aborted) return leave();
+		signal.addEventListener("abort", leave, { once: true });
+		turn.then(
+			(value) => {
+				signal.removeEventListener("abort", leave);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", leave);
+				reject(error);
+			},
+		);
+	});
+}
+
+/** What a cut stopped while it waited its turn rejects with. */
+function stopped(): Error {
+	const error = new Error(
+		"Stopped while waiting for another cut of this tree.",
+	);
+	error.name = "AbortError";
+	return error;
 }
