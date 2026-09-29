@@ -25,6 +25,7 @@
  * session registry) -- not something this module does itself.
  */
 
+import { bounded } from "../../clock/bound.js";
 import {
 	DEFAULT_SERVERS,
 	resolveBinary,
@@ -37,6 +38,7 @@ import type {
 	Diagnostic,
 	HoverInfo,
 	LspBackend,
+	LspCallOptions,
 	LspLocation,
 	LspRange,
 	LspTarget,
@@ -64,6 +66,8 @@ export interface StandaloneBackendOptions {
 	readonly env?: NodeJS.ProcessEnv;
 	/** How long a server may sit unused before it is stopped. */
 	readonly idleMs?: number;
+	/** How long one call may wait on its servers before it is given up on. */
+	readonly requestMs?: number;
 }
 
 /**
@@ -72,6 +76,13 @@ export interface StandaloneBackendOptions {
  * behind gives its memory back within the hour.
  */
 const DEFAULT_IDLE_MS = 10 * 60_000;
+
+/**
+ * Default request clock. References across a large project on a cold
+ * server have taken tens of seconds; two minutes is well past that and
+ * still ends a request a server has simply stopped answering.
+ */
+const DEFAULT_REQUEST_MS = 2 * 60_000;
 
 /** A standalone backend with visibility into its live pool. */
 export interface StandaloneBackend extends LspBackend {
@@ -88,6 +99,7 @@ export function createStandaloneBackend(
 	const servers = options.servers ?? DEFAULT_SERVERS;
 	const env = options.env ?? process.env;
 	const idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
+	const requestMs = options.requestMs ?? DEFAULT_REQUEST_MS;
 	const pool = new Map<string, Promise<StandaloneServer>>();
 	// Calls in flight per pool key, and the stop timer armed when a
 	// key's last call finishes.
@@ -219,69 +231,145 @@ export function createStandaloneBackend(
 		return instances;
 	};
 
+	/**
+	 * Workspace symbols carry no file, so they search every server
+	 * already running; nothing is spawned on demand, and a server
+	 * stopped for idleness is not searched until something file-bound
+	 * starts it again.
+	 */
+	const searchWorkspace = async (
+		query: string,
+		signal: AbortSignal,
+	): Promise<SymbolInfo[]> => {
+		const keys = [...pool.keys()];
+		for (const key of keys) claim(key);
+		try {
+			const live = await Promise.all(keys.map((key) => pool.get(key)));
+			const results = await Promise.all(
+				live.map((server) => server?.workspaceSymbols(query, signal) ?? []),
+			);
+			return results.flat();
+		} finally {
+			for (const key of keys) release(key);
+		}
+	};
+
+	/**
+	 * Run one call under the caller's signal and the request clock.
+	 *
+	 * The work gets a signal of its own, which fires when the caller
+	 * gives up or the clock runs out, and the server is told to stop
+	 * through it. The wait ends either way: a server that ignores the
+	 * cancellation keeps its own time, not the caller's.
+	 */
+	const call = <T>(
+		what: string,
+		options: LspCallOptions | undefined,
+		work: (signal: AbortSignal) => Promise<T>,
+	): Promise<T> => {
+		const stop = new AbortController();
+		return bounded(
+			work(stop.signal),
+			{
+				...(options?.signal ? { signal: options.signal } : {}),
+				wallMs: requestMs,
+				what,
+			},
+			() => stop.abort(),
+		);
+	};
+
 	return {
 		name: "standalone",
 
-		async diagnostics(path: string): Promise<Diagnostic[]> {
-			return withInstances(path, false, async (instances) => {
-				const results = await Promise.all(
-					instances.map((s) => s.diagnose(path)),
-				);
-				return results.flat();
-			});
-		},
-
-		async definition(target: LspTarget): Promise<LspLocation[]> {
-			return withInstances(target.path, true, ([server]) =>
-				server.definition(target),
+		async diagnostics(
+			path: string,
+			options?: LspCallOptions,
+		): Promise<Diagnostic[]> {
+			return call(`diagnostics for ${path}`, options, (signal) =>
+				withInstances(path, false, async (instances) => {
+					const results = await Promise.all(
+						instances.map((s) => s.diagnose(path, signal)),
+					);
+					return results.flat();
+				}),
 			);
 		},
 
-		async references(target: LspTarget): Promise<LspLocation[]> {
-			return withInstances(target.path, true, ([server]) =>
-				server.references(target),
+		async definition(
+			target: LspTarget,
+			options?: LspCallOptions,
+		): Promise<LspLocation[]> {
+			return call(`definition in ${target.path}`, options, (signal) =>
+				withInstances(target.path, true, ([server]) =>
+					server.definition(target, signal),
+				),
 			);
 		},
 
-		async hover(target: LspTarget): Promise<HoverInfo | null> {
-			return withInstances(target.path, true, ([server]) =>
-				server.hover(target),
+		async references(
+			target: LspTarget,
+			options?: LspCallOptions,
+		): Promise<LspLocation[]> {
+			return call(`references in ${target.path}`, options, (signal) =>
+				withInstances(target.path, true, ([server]) =>
+					server.references(target, signal),
+				),
 			);
 		},
 
-		async documentSymbols(path: string): Promise<SymbolInfo[]> {
-			return withInstances(path, true, ([server]) =>
-				server.documentSymbols(path),
+		async hover(
+			target: LspTarget,
+			options?: LspCallOptions,
+		): Promise<HoverInfo | null> {
+			return call(`hover in ${target.path}`, options, (signal) =>
+				withInstances(target.path, true, ([server]) =>
+					server.hover(target, signal),
+				),
 			);
 		},
 
-		async workspaceSymbols(query: string): Promise<SymbolInfo[]> {
-			// Workspace symbols carry no file, so they search every
-			// server already running; nothing is spawned on demand, and
-			// a server stopped for idleness is not searched until
-			// something file-bound starts it again.
-			const keys = [...pool.keys()];
-			for (const key of keys) claim(key);
-			try {
-				const live = await Promise.all(keys.map((key) => pool.get(key)));
-				const results = await Promise.all(
-					live.map((server) => server?.workspaceSymbols(query) ?? []),
-				);
-				return results.flat();
-			} finally {
-				for (const key of keys) release(key);
-			}
-		},
-
-		async rename(target: LspTarget, newName: string): Promise<WorkspaceEdit> {
-			return withInstances(target.path, true, ([server]) =>
-				server.rename(target, newName),
+		async documentSymbols(
+			path: string,
+			options?: LspCallOptions,
+		): Promise<SymbolInfo[]> {
+			return call(`symbols in ${path}`, options, (signal) =>
+				withInstances(path, true, ([server]) =>
+					server.documentSymbols(path, signal),
+				),
 			);
 		},
 
-		async codeActions(path: string, range?: LspRange): Promise<CodeAction[]> {
-			return withInstances(path, true, ([server]) =>
-				server.codeActions(path, range),
+		async workspaceSymbols(
+			query: string,
+			options?: LspCallOptions,
+		): Promise<SymbolInfo[]> {
+			return call(`workspace symbols for ${query}`, options, (signal) =>
+				searchWorkspace(query, signal),
+			);
+		},
+
+		async rename(
+			target: LspTarget,
+			newName: string,
+			options?: LspCallOptions,
+		): Promise<WorkspaceEdit> {
+			return call(`rename in ${target.path}`, options, (signal) =>
+				withInstances(target.path, true, ([server]) =>
+					server.rename(target, newName, signal),
+				),
+			);
+		},
+
+		async codeActions(
+			path: string,
+			range?: LspRange,
+			options?: LspCallOptions,
+		): Promise<CodeAction[]> {
+			return call(`code actions in ${path}`, options, (signal) =>
+				withInstances(path, true, ([server]) =>
+					server.codeActions(path, range, signal),
+				),
 			);
 		},
 

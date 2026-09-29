@@ -12,6 +12,8 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import {
+	type CancellationToken,
+	CancellationTokenSource,
 	createMessageConnection,
 	type MessageConnection,
 	StreamMessageReader,
@@ -228,43 +230,79 @@ export class StandaloneServer {
 	}
 
 	/** Problems the server reports against the file's current bytes. */
-	async diagnose(path: string): Promise<Diagnostic[]> {
+	async diagnose(path: string, signal?: AbortSignal): Promise<Diagnostic[]> {
 		this.ensureOpen(path);
 		const raw = this.pullSupported
-			? await this.pullDiagnostics(path)
+			? await this.pullDiagnostics(path, signal)
 			: await this.pushedDiagnostics(path);
 		const lines = this.linesFor(path);
 		return raw.map((d) => this.toDiagnostic(path, lines, d));
 	}
 
 	/** Where the symbol under the target is defined. */
-	async definition(target: LspTarget): Promise<LspLocation[]> {
-		await this.ensureReady(target.path);
-		const result = await this.connection.sendRequest(DefinitionRequest.type, {
-			textDocument: { uri: fileToUri(target.path) },
-			position: toProtocolPosition(this.linesFor(target.path), target.position),
-		});
+	async definition(
+		target: LspTarget,
+		signal?: AbortSignal,
+	): Promise<LspLocation[]> {
+		await this.ensureReady(target.path, signal);
+		const result = await this.cancellable(signal, (token) =>
+			this.connection.sendRequest(
+				DefinitionRequest.type,
+				{
+					textDocument: { uri: fileToUri(target.path) },
+					position: toProtocolPosition(
+						this.linesFor(target.path),
+						target.position,
+					),
+				},
+				token,
+			),
+		);
 		return this.toLocations(result);
 	}
 
 	/** Every reference to the symbol under the target. */
-	async references(target: LspTarget): Promise<LspLocation[]> {
-		await this.ensureReady(target.path);
-		const result = await this.connection.sendRequest(ReferencesRequest.type, {
-			textDocument: { uri: fileToUri(target.path) },
-			position: toProtocolPosition(this.linesFor(target.path), target.position),
-			context: { includeDeclaration: true },
-		});
+	async references(
+		target: LspTarget,
+		signal?: AbortSignal,
+	): Promise<LspLocation[]> {
+		await this.ensureReady(target.path, signal);
+		const result = await this.cancellable(signal, (token) =>
+			this.connection.sendRequest(
+				ReferencesRequest.type,
+				{
+					textDocument: { uri: fileToUri(target.path) },
+					position: toProtocolPosition(
+						this.linesFor(target.path),
+						target.position,
+					),
+					context: { includeDeclaration: true },
+				},
+				token,
+			),
+		);
 		return this.toLocations(result);
 	}
 
 	/** Documentation for the symbol under the target, or null. */
-	async hover(target: LspTarget): Promise<HoverInfo | null> {
-		await this.ensureReady(target.path);
-		const result = await this.connection.sendRequest(HoverRequest.type, {
-			textDocument: { uri: fileToUri(target.path) },
-			position: toProtocolPosition(this.linesFor(target.path), target.position),
-		});
+	async hover(
+		target: LspTarget,
+		signal?: AbortSignal,
+	): Promise<HoverInfo | null> {
+		await this.ensureReady(target.path, signal);
+		const result = await this.cancellable(signal, (token) =>
+			this.connection.sendRequest(
+				HoverRequest.type,
+				{
+					textDocument: { uri: fileToUri(target.path) },
+					position: toProtocolPosition(
+						this.linesFor(target.path),
+						target.position,
+					),
+				},
+				token,
+			),
+		);
 		if (!result) return null;
 		const contents = hoverText(result.contents);
 		if (!contents) return null;
@@ -277,11 +315,17 @@ export class StandaloneServer {
 	}
 
 	/** Symbols declared in one file. */
-	async documentSymbols(path: string): Promise<SymbolInfo[]> {
-		await this.ensureReady(path);
-		const result = await this.connection.sendRequest(
-			DocumentSymbolRequest.type,
-			{ textDocument: { uri: fileToUri(path) } },
+	async documentSymbols(
+		path: string,
+		signal?: AbortSignal,
+	): Promise<SymbolInfo[]> {
+		await this.ensureReady(path, signal);
+		const result = await this.cancellable(signal, (token) =>
+			this.connection.sendRequest(
+				DocumentSymbolRequest.type,
+				{ textDocument: { uri: fileToUri(path) } },
+				token,
+			),
 		);
 		if (!result) return [];
 		const lines = this.linesFor(path);
@@ -293,30 +337,53 @@ export class StandaloneServer {
 	}
 
 	/** Symbols across the project matching a query. */
-	async workspaceSymbols(query: string): Promise<SymbolInfo[]> {
-		const result = await this.connection.sendRequest(
-			WorkspaceSymbolRequest.type,
-			{ query },
+	async workspaceSymbols(
+		query: string,
+		signal?: AbortSignal,
+	): Promise<SymbolInfo[]> {
+		const result = await this.cancellable(signal, (token) =>
+			this.connection.sendRequest(
+				WorkspaceSymbolRequest.type,
+				{ query },
+				token,
+			),
 		);
 		if (!result) return [];
 		return result.map((item) => this.fromSymbolInformation(item));
 	}
 
 	/** Rename the symbol under the target and apply the edits. */
-	async rename(target: LspTarget, newName: string): Promise<WorkspaceEdit> {
-		await this.ensureReady(target.path);
-		const edit = await this.connection.sendRequest(RenameRequest.type, {
-			textDocument: { uri: fileToUri(target.path) },
-			position: toProtocolPosition(this.linesFor(target.path), target.position),
-			newName,
-		});
+	async rename(
+		target: LspTarget,
+		newName: string,
+		signal?: AbortSignal,
+	): Promise<WorkspaceEdit> {
+		await this.ensureReady(target.path, signal);
+		const edit = await this.cancellable(signal, (token) =>
+			this.connection.sendRequest(
+				RenameRequest.type,
+				{
+					textDocument: { uri: fileToUri(target.path) },
+					position: toProtocolPosition(
+						this.linesFor(target.path),
+						target.position,
+					),
+					newName,
+				},
+				token,
+			),
+		);
 		if (!edit) return { changes: [] };
 		return this.applyWorkspaceEdit(edit);
 	}
 
 	/** Code actions the server offers for a file, optionally at a range. */
-	async codeActions(path: string, range?: LspRange): Promise<CodeAction[]> {
-		await this.ensureReady(path);
+	async codeActions(
+		path: string,
+		range?: LspRange,
+		signal?: AbortSignal,
+	): Promise<CodeAction[]> {
+		await this.ensureReady(path, signal);
 		const lines = this.linesFor(path);
 		const protocolRange = range
 			? {
@@ -324,11 +391,17 @@ export class StandaloneServer {
 					end: toProtocolPosition(lines, range.end),
 				}
 			: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } };
-		const result = await this.connection.sendRequest(CodeActionRequest.type, {
-			textDocument: { uri: fileToUri(path) },
-			range: protocolRange,
-			context: { diagnostics: [] },
-		});
+		const result = await this.cancellable(signal, (token) =>
+			this.connection.sendRequest(
+				CodeActionRequest.type,
+				{
+					textDocument: { uri: fileToUri(path) },
+					range: protocolRange,
+					context: { diagnostics: [] },
+				},
+				token,
+			),
+		);
 		if (!result) return [];
 		return result.map((item) => ({
 			title: item.title,
@@ -364,6 +437,31 @@ export class StandaloneServer {
 	}
 
 	/**
+	 * Send one request under a token the caller's signal cancels.
+	 *
+	 * A cancelled token sends the server `$/cancelRequest`, so a
+	 * server busy on a large program stops the work rather than
+	 * finishing an answer nobody is waiting for. The caller's wait is
+	 * ended above this, by the backend's bound: a server is free to
+	 * ignore a cancellation, and many answer late or never.
+	 */
+	private async cancellable<T>(
+		signal: AbortSignal | undefined,
+		send: (token: CancellationToken) => Promise<T>,
+	): Promise<T> {
+		const source = new CancellationTokenSource();
+		const cancel = (): void => source.cancel();
+		if (signal?.aborted) cancel();
+		else signal?.addEventListener("abort", cancel, { once: true });
+		try {
+			return await send(source.token);
+		} finally {
+			signal?.removeEventListener("abort", cancel);
+			source.dispose();
+		}
+	}
+
+	/**
 	 * Open the target and wait for the server to finish building
 	 * the project's program before a type-intelligence request.
 	 * The server answers references and definition only across
@@ -372,14 +470,15 @@ export class StandaloneServer {
 	 * push server publishes the file's first diagnostics then.
 	 * Cached per file so warm requests skip the wait.
 	 */
-	private async ensureReady(path: string): Promise<void> {
+	private async ensureReady(path: string, signal?: AbortSignal): Promise<void> {
 		const uri = fileToUri(path);
 		const alreadyOpen = this.openDocs.has(uri);
 		this.ensureOpen(path);
 		if (alreadyOpen) return;
 		// Drive the program build and use its completion as the gate.
-		if (this.pullSupported) await this.pullDiagnostics(path).catch(() => {});
-		else await this.settleDiagnostics(uri);
+		if (this.pullSupported) {
+			await this.pullDiagnostics(path, signal).catch(() => {});
+		} else await this.settleDiagnostics(uri);
 	}
 
 	/**
@@ -387,11 +486,18 @@ export class StandaloneServer {
 	 * LSP computes them on request and resolves once the program is
 	 * built, so this both reports problems and gates readiness.
 	 */
-	private async pullDiagnostics(path: string): Promise<ProtocolDiagnostic[]> {
+	private async pullDiagnostics(
+		path: string,
+		signal?: AbortSignal,
+	): Promise<ProtocolDiagnostic[]> {
 		const report = await withTimeout(
-			this.connection.sendRequest(DocumentDiagnosticRequest.type, {
-				textDocument: { uri: fileToUri(path) },
-			}),
+			this.cancellable(signal, (token) =>
+				this.connection.sendRequest(
+					DocumentDiagnosticRequest.type,
+					{ textDocument: { uri: fileToUri(path) } },
+					token,
+				),
+			),
 			DIAGNOSTICS_TIMEOUT_MS,
 			`diagnostics ${path}`,
 		);
