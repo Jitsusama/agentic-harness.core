@@ -624,7 +624,7 @@ export class BrowserSession {
 	/** Everything this session overhears, and its buffers. */
 	private readonly telemetry = new SessionTelemetry(this.wires, {
 		onCrash: () => {
-			this.recovery = this.recover();
+			this.startRecovery();
 		},
 		downloadDir: () => this.artifacts.sink().dir,
 		keep: (path) => {
@@ -1013,6 +1013,18 @@ export class BrowserSession {
 	 * be reinstalled because they were bound to a protocol channel
 	 * that no longer answers.
 	 */
+	private startRecovery(): Promise<void> {
+		const recovery = this.recover();
+		// A crash usually lands between calls, so nothing awaits this
+		// until the next one arrives. A replacement that cannot be made
+		// would be an unhandled rejection meanwhile, and in a host with
+		// no handler for one, pi among them, that ends the process.
+		// Whoever awaits it later still sees the failure.
+		recovery.catch(() => {});
+		this.recovery = recovery;
+		return recovery;
+	}
+
 	private async recover(): Promise<void> {
 		// The dead page will not answer, but closing it does work,
 		// and leaving it would leak a renderer for the session's life.
@@ -1066,13 +1078,6 @@ export class BrowserSession {
 	}
 
 	/**
-	 * Wait for any recovery to finish.
-	 *
-	 * Called before anything that touches the tab, so a read that
-	 * arrives during a crash waits for the replacement instead of
-	 * hanging on a renderer that is never coming back.
-	 */
-	/**
 	 * Wait for the replacement tab, when one is coming.
 	 *
 	 * The crash announcement that starts a recovery can arrive
@@ -1089,10 +1094,23 @@ export class BrowserSession {
 			await new Promise((wake) => setTimeout(wake, CRASH_NOTICE_POLL_MS));
 		}
 		if (!this.recovery) return false;
-		await this.recovery;
+		try {
+			await this.recovery;
+		} catch {
+			// No replacement came, so the caller answers with the failure
+			// that sent it here; the next call tries to make the tab again.
+			return false;
+		}
 		return true;
 	}
 
+	/**
+	 * Wait for any recovery to finish.
+	 *
+	 * Called before anything that touches the tab, so a read that
+	 * arrives during a crash waits for the replacement instead of
+	 * hanging on a renderer that is never coming back.
+	 */
 	private async ready(): Promise<void> {
 		// Every operation passes through here, which makes it the one
 		// honest place to record that the session is being used. The
@@ -1101,7 +1119,16 @@ export class BrowserSession {
 		// the session did, so a health sweep or a long wait could
 		// have the browser closed out from under it mid-call.
 		this.usedAt = Date.now();
-		if (this.recovery) await this.recovery;
+		if (!this.recovery) return;
+		try {
+			await this.recovery;
+		} catch {
+			// The last attempt to replace the tab failed. Kept as the
+			// answer, it failed every call for the rest of the session,
+			// so each call tries once more and this attempt's failure,
+			// if it fails too, is that call's answer.
+			await this.startRecovery();
+		}
 	}
 
 	/** When this session last did anything, for the idle reaper. */
