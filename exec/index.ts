@@ -6,6 +6,7 @@
  * neither owns it.
  */
 
+export { callSignal, withCallSignal } from "./call-signal.js";
 export {
 	type Exec,
 	type ExecResult,

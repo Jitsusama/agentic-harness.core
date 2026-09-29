@@ -17,6 +17,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { callSignal } from "./call-signal.js";
 import type { Exec, ExecResult } from "./exec.js";
 
 /** The exit code of a command its clock stopped, as `timeout(1)` reports. */
@@ -60,7 +61,24 @@ export interface SpawnExecOptions {
  * `EXIT_ABORTED` or `EXIT_TIMED_OUT` with what it had said so far.
  */
 export function spawnExec(options: SpawnExecOptions = {}): Exec {
-	return (command, args) => runUnattended(command, args, options);
+	// The call is read when the command starts, not when the exec is
+	// made: an exec is usually made once and used by every call after.
+	return (command, args) =>
+		runUnattended(command, args, {
+			...options,
+			...stoppedBy(options.signal, callSignal()),
+		});
+}
+
+/** Whichever of the command's own signal and its call's fires first. */
+function stoppedBy(
+	own: AbortSignal | undefined,
+	call: AbortSignal | undefined,
+): { signal?: AbortSignal } {
+	if (own && call && own !== call)
+		return { signal: AbortSignal.any([own, call]) };
+	const either = own ?? call;
+	return either ? { signal: either } : {};
 }
 
 function runUnattended(
