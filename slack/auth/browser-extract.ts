@@ -12,6 +12,7 @@
  */
 
 import * as fs from "node:fs";
+import type { Browser } from "puppeteer-core";
 
 /**
  * Default Slack URL to navigate to: the dedicated sign-in entry
@@ -55,6 +56,17 @@ export interface BrowserCredentials {
 	cookie: string;
 }
 
+/** How an extraction may be stopped, and whether its window shows. */
+export interface ExtractOptions {
+	/** Stops the extraction, closing its window, when it fires. */
+	signal?: AbortSignal;
+	/**
+	 * Hides the window. Only useful where nobody signs in by hand, a test
+	 * among them; a person needs to see it.
+	 */
+	headless?: boolean;
+}
+
 /** Find the Chrome executable on disk. */
 function findChrome(): string {
 	const envPath = process.env.CHROME_PATH;
@@ -91,71 +103,113 @@ export async function extractFromBrowser(
 	slackUrl = DEFAULT_SLACK_URL,
 	timeoutMs = DEFAULT_TIMEOUT_MS,
 	onStep?: (message: string) => void,
+	options: ExtractOptions = {},
 ): Promise<BrowserCredentials> {
+	const { signal } = options;
+	if (signal?.aborted) throw stopped(signal);
 	const chromePath = findChrome();
 	// Loaded here rather than at import, since this runs once per
 	// Slack setup and the module is imported on every start.
 	const { default: puppeteer } = await import("puppeteer-core");
 	const browser = await puppeteer.launch({
 		executablePath: chromePath,
-		headless: false,
+		headless: options.headless ?? false,
 		args: ["--no-sandbox", "--disable-setuid-sandbox"],
+		// Puppeteer's handlers answer SIGINT with process.exit, taking the
+		// exit from the host; the ones installed below kill Chrome without.
+		handleSIGINT: false,
+		handleSIGTERM: false,
+		handleSIGHUP: false,
 	});
+	const unhook = killOnSignal(browser);
+
+	let onAbort = (): void => {};
+	const abandoned = new Promise<never>((_, reject) => {
+		onAbort = () => reject(stopped(signal));
+	});
+	signal?.addEventListener("abort", onAbort, { once: true });
+	// Given up on while Chrome was starting, which no listener heard.
+	if (signal?.aborted) onAbort();
 
 	try {
-		const context = browser.defaultBrowserContext();
-		const page = (await browser.pages())[0] ?? (await browser.newPage());
-		await page.goto(slackUrl, { waitUntil: "domcontentloaded" });
-		onStep?.(SIGN_IN_GUIDANCE);
+		const polling = pollForCredentials(
+			browser,
+			slackUrl,
+			timeoutMs,
+			onStep,
+			signal,
+		);
+		if (signal === undefined) return await polling;
+		// Closing the window below ends the poll with an error of its own,
+		// which nobody is waiting for once the extraction was abandoned.
+		polling.catch(() => undefined);
+		return await Promise.race([polling, abandoned]);
+	} finally {
+		signal?.removeEventListener("abort", onAbort);
+		unhook();
+		await closeWithin(browser, CLOSE_GRACE_MS);
+	}
+}
 
-		const startTime = Date.now();
+/** Watches Chrome until it holds both credentials or the clock runs out. */
+async function pollForCredentials(
+	browser: Browser,
+	slackUrl: string,
+	timeoutMs: number,
+	onStep: ((message: string) => void) | undefined,
+	signal: AbortSignal | undefined,
+): Promise<BrowserCredentials> {
+	const context = browser.defaultBrowserContext();
+	const page = (await browser.pages())[0] ?? (await browser.newPage());
+	await page.goto(slackUrl, { waitUntil: "domcontentloaded" });
+	onStep?.(SIGN_IN_GUIDANCE);
 
-		while (Date.now() - startTime < timeoutMs) {
-			// Grab the most recent page, since Slack and SSO flows may open
-			// new tabs or navigate, destroying the original context.
-			const pages = await browser.pages();
-			const activePage = pages[pages.length - 1] ?? page;
+	const startTime = Date.now();
 
-			// A workspace's own SSB redirect page (cloud-native.slack.com/
-			// ssb/redirect, and its equivalents) defaults to prompting for
-			// the desktop app, with a "use Slack in your browser" link as
-			// the only way to reach the web client instead. Nothing here
-			// wants the desktop app, and nothing clicks that link on its
-			// own, so a real run sat on that splash page for the whole
-			// five-minute budget until this was added.
-			await clickUseInBrowser(activePage);
+	while (Date.now() - startTime < timeoutMs) {
+		// Grab the most recent page, since Slack and SSO flows may open
+		// new tabs or navigate, destroying the original context.
+		const pages = await browser.pages();
+		const activePage = pages[pages.length - 1] ?? page;
 
-			// The cookie lives in the browser context, not the page,
-			// so it survives navigations. Check it first.
-			const cookies = await context.cookies();
-			const dCookie = cookies.find(
-				(c) => c.name === "d" && c.domain.includes("slack.com"),
-			);
-			const cookie = dCookie?.value;
+		// A workspace's own SSB redirect page (cloud-native.slack.com/
+		// ssb/redirect, and its equivalents) defaults to prompting for
+		// the desktop app, with a "use Slack in your browser" link as
+		// the only way to reach the web client instead. Nothing here
+		// wants the desktop app, and nothing clicks that link on its
+		// own, so a real run sat on that splash page for the whole
+		// five-minute budget until this was added.
+		await clickUseInBrowser(activePage);
 
-			// Try to read the token from localStorage. This fails during
-			// navigations (context destroyed) and on non-Slack pages
-			// (SSO provider). Both are expected, so we just retry.
-			const token = await extractTokenFromPage(activePage);
+		// The cookie lives in the browser context, not the page,
+		// so it survives navigations. Check it first.
+		const cookies = await context.cookies();
+		const dCookie = cookies.find(
+			(c) => c.name === "d" && c.domain.includes("slack.com"),
+		);
+		const cookie = dCookie?.value;
 
-			if (token?.startsWith("xoxc-") && cookie?.startsWith("xoxd-")) {
-				return { token, cookie };
-			}
+		// Try to read the token from localStorage. This fails during
+		// navigations (context destroyed) and on non-Slack pages
+		// (SSO provider). Both are expected, so we just retry.
+		const token = await extractTokenFromPage(activePage);
 
-			await sleep(POLL_INTERVAL_MS);
+		if (token?.startsWith("xoxc-") && cookie?.startsWith("xoxd-")) {
+			return { token, cookie };
 		}
 
-		throw new Error(
-			"Timed out waiting for Slack credentials. " +
-				"Make sure you are logged into Slack in the browser window, " +
-				"and that you have clicked into a specific workspace: a fresh " +
-				"browser profile has no session yet, so app.slack.com shows a " +
-				"workspace picker after sign-in rather than opening one directly, " +
-				"and nothing here is extractable until a workspace is open.",
-		);
-	} finally {
-		await browser.close();
+		await sleep(POLL_INTERVAL_MS);
+		if (signal?.aborted) throw stopped(signal);
 	}
+
+	throw new Error(
+		"Timed out waiting for Slack credentials. " +
+			"Make sure you are logged into Slack in the browser window, " +
+			"and that you have clicked into a specific workspace: a fresh " +
+			"browser profile has no session yet, so app.slack.com shows a " +
+			"workspace picker after sign-in rather than opening one directly, " +
+			"and nothing here is extractable until a workspace is open.",
+	);
 }
 
 /**
@@ -232,4 +286,71 @@ async function extractTokenFromPage(
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** How long a window has to close before its Chrome is killed outright. */
+const CLOSE_GRACE_MS = 5000;
+
+const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
+/**
+ * Kills this Chrome, and the helpers it started, on a signal that would
+ * otherwise orphan it. The exit belongs to the host: with anybody else
+ * listening this only kills Chrome, and alone it raises the signal again
+ * so the default, being killed by it, still happens. Returns the unhook.
+ */
+function killOnSignal(browser: Browser): () => void {
+	const hooks = SIGNALS.map((signal) => {
+		const hook = (): void => {
+			killGroup(browser);
+			if (process.listenerCount(signal) === 0)
+				process.kill(process.pid, signal);
+		};
+		process.once(signal, hook);
+		return { signal, hook };
+	});
+	return () => {
+		for (const { signal, hook } of hooks) process.off(signal, hook);
+	};
+}
+
+/** Closes Chrome politely, and kills it when that does not happen in time. */
+async function closeWithin(browser: Browser, graceMs: number): Promise<void> {
+	let timer: NodeJS.Timeout | undefined;
+	try {
+		await Promise.race([
+			browser.close(),
+			new Promise((resolve) => {
+				timer = setTimeout(resolve, graceMs);
+			}),
+		]);
+	} catch {
+		// Already gone, killed by a signal or crashed; the kill below makes
+		// sure of it either way.
+	} finally {
+		clearTimeout(timer);
+	}
+	killGroup(browser);
+}
+
+/** Kills Chrome's whole process group, which may already have exited. */
+function killGroup(browser: Browser): void {
+	const pid = browser.process()?.pid;
+	if (pid === undefined) return;
+	try {
+		// Puppeteer starts Chrome as a group leader, so the helpers go too.
+		process.kill(-pid, "SIGKILL");
+	} catch {
+		// ESRCH: the group has already exited, which is what was wanted.
+	}
+}
+
+/** The error an abandoned extraction rejects with. */
+function stopped(signal: AbortSignal | undefined): Error {
+	const reason = signal?.reason;
+	if (reason instanceof Error && reason.name === "AbortError") return reason;
+	return new DOMException(
+		"Slack credential extraction was stopped.",
+		"AbortError",
+	);
 }
