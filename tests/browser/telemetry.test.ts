@@ -478,6 +478,53 @@ describe.skipIf(!haveChrome)("a session whose tab crashed", () => {
 		}
 	});
 
+	it("survives a replacement tab that could not be made, and tries again", async () => {
+		const session = await BrowserSession.open("crash-unreplaced");
+		// The session's own tab and context, reached past the type so
+		// the crash can happen with no call waiting on it, the way a
+		// renderer dies between tool calls, and so the first attempt to
+		// replace it fails the way a browser going away makes it fail.
+		const inner = session as unknown as {
+			page: { goto(url: string): Promise<unknown> };
+			context: { newPage(): Promise<unknown> };
+		};
+		const context = inner.context;
+		const newPage = context.newPage.bind(context);
+		let attempts = 0;
+		context.newPage = () => {
+			attempts += 1;
+			return attempts === 1
+				? Promise.reject(new Error("no tab could be made"))
+				: newPage();
+		};
+		const unhandled: unknown[] = [];
+		const listen = (reason: unknown): void => {
+			unhandled.push(reason);
+		};
+		process.on("unhandledRejection", listen);
+		try {
+			await session.navigate(fixture.url("/offers"));
+			await inner.page.goto("chrome://crash").catch(() => {});
+			await until(() => attempts > 0, "a replacement tab to be asked for");
+			// An unhandled rejection is reported once the tick it was made
+			// in drains, so give it well past that to show itself.
+			await new Promise((resolve) => setTimeout(resolve, 500));
+
+			// Nothing was left for the process to die of: pi installs no
+			// handler, so an unhandled rejection there ends the session.
+			expect(unhandled).toEqual([]);
+			// And the failure is not kept as the answer to everything
+			// after it: the next call makes the tab the first could not.
+			const after = await session.navigate(fixture.url("/offers"));
+			expect(after.failure).toBeUndefined();
+			expect((await session.status()).url).toBe(fixture.url("/offers"));
+		} finally {
+			process.off("unhandledRejection", listen);
+			context.newPage = newPage;
+			await session.close();
+		}
+	});
+
 	it("tells a blank replacement tab from a page with nothing on it", async () => {
 		const session = await BrowserSession.open("crash-stranded");
 		try {

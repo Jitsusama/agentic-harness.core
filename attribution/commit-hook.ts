@@ -80,6 +80,9 @@ export function installCommitHook(
 	options: CommitHookOptions,
 ): HookInstall {
 	const layout = locateHooks(repoRoot);
+	if (layout === UNANSWERED) {
+		return { installed: false, reason: "git did not answer" };
+	}
 	if (!layout) return { installed: false, reason: "not a git repo" };
 	return installInto(layout, options);
 }
@@ -138,6 +141,16 @@ function installInto(
  * in. Each git call is a synchronous spawn on the command path, so
  * a first visit costs one and a repeat costs none.
  */
+/**
+ * How long one git probe on the command path may take.
+ *
+ * The probe is synchronous, because it has to land before the command
+ * runs, so while it waits nothing in pi renders or reads a key. A
+ * rev-parse answers in milliseconds; one still silent at two seconds is
+ * stuck on a hung mount or a filesystem that stopped responding.
+ */
+export const GIT_PROBE_TIMEOUT_MS = 2000;
+
 export function ensureCommitHook(
 	dir: string,
 	installed: Set<string>,
@@ -145,6 +158,13 @@ export function ensureCommitHook(
 ): void {
 	if (installed.has(dir)) return;
 	const layout = locateHooks(dir);
+	// A git that never answered is not asked about this directory again
+	// this session: its commits go unhooked, which costs a trailer,
+	// where asking again would freeze pi for the clock on every command.
+	if (layout === UNANSWERED) {
+		installed.add(dir);
+		return;
+	}
 	if (!layout) return;
 	installed.add(dir);
 	if (installed.has(layout.root)) return;
@@ -154,6 +174,18 @@ export function ensureCommitHook(
 	} catch {
 		// Best-effort: never let hook installation break a command.
 	}
+}
+
+/** The probe's answer when git ran out the clock. */
+const UNANSWERED = Symbol("unanswered");
+
+/** True when a synchronous spawn was killed for running out its clock. */
+function ranOutClock(error: unknown): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		(error as { code?: unknown }).code === "ETIMEDOUT"
+	);
 }
 
 /** Where a repo keeps its hooks. */
@@ -172,7 +204,7 @@ interface HooksLayout {
  * path as the common dir plus `/hooks`, in the same form, so any
  * other answer means core.hooksPath points somewhere else.
  */
-function locateHooks(dir: string): HooksLayout | null {
+function locateHooks(dir: string): HooksLayout | null | typeof UNANSWERED {
 	let answer: string;
 	try {
 		answer = execFileSync(
@@ -186,9 +218,14 @@ function locateHooks(dir: string): HooksLayout | null {
 				"--git-path",
 				"hooks",
 			],
-			{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+			{
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+				timeout: GIT_PROBE_TIMEOUT_MS,
+			},
 		);
-	} catch {
+	} catch (error) {
+		if (ranOutClock(error)) return UNANSWERED;
 		// Not in a working tree (or git unavailable): nothing to hook.
 		return null;
 	}
@@ -205,10 +242,16 @@ function locateHooks(dir: string): HooksLayout | null {
 /** The git repository root containing dir, or null when there is none. */
 export function repoRootOf(dir: string): string | null {
 	try {
-		return execFileSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
-		}).trim();
+		const root = execFileSync(
+			"git",
+			["-C", dir, "rev-parse", "--show-toplevel"],
+			{
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+				timeout: GIT_PROBE_TIMEOUT_MS,
+			},
+		).trim();
+		return root.length > 0 ? root : null;
 	} catch {
 		// Not a git repository (or git unavailable): no hook to install.
 		return null;
