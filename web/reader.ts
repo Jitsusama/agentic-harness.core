@@ -14,8 +14,12 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { VirtualConsole } from "jsdom";
 import type { Page } from "puppeteer-core";
+import {
+	type Article,
+	type ExtractOptions,
+	extractArticle,
+} from "./article.js";
 import { abortError } from "./bound.js";
 import { isPidAlive, withTab } from "./browser.js";
 import { injectCookies, isSetUp } from "./cookies/index.js";
@@ -70,11 +74,7 @@ export interface PageBundle {
 }
 
 /** Extracted article from defuddle: markdown content, title and word count. */
-export interface Article {
-	markdown: string;
-	title: string;
-	wordCount: number;
-}
+export type { Article } from "./article.js";
 
 /**
  * The raw representations captured from a settled page, before they are
@@ -106,7 +106,11 @@ export type { BundleSink } from "./envelope/sink.js";
 export interface CaptureDeps {
 	preparePage(page: Page): Promise<void>;
 	captureTiles(page: Page): Promise<TiledCapture>;
-	extractArticle(html: string, url: string): Promise<Article | null>;
+	extractArticle(
+		html: string,
+		url: string,
+		options?: ExtractOptions,
+	): Promise<Article | null>;
 }
 
 /** Timeout for page navigation in milliseconds. */
@@ -124,9 +128,6 @@ const READ_WALL_MS = 60_000;
 
 /** Characters of the best available text used for the inline excerpt. */
 const EXCERPT_LENGTH = 500;
-
-/** Below this word count we treat defuddle's article as empty and skip it. */
-const MIN_ARTICLE_WORDS = 30;
 
 /** Upper bound on the page-controlled title we carry inline. */
 const MAX_TITLE_LENGTH = 300;
@@ -248,58 +249,6 @@ function cleanText(text: string): string {
 		.join("\n")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim();
-}
-
-/**
- * Create a jsdom VirtualConsole that suppresses CSS parse warnings
- * without affecting process.stderr globally.
- */
-function quietVirtualConsole(Console: typeof VirtualConsole) {
-	const vc = new Console();
-	vc.on("error", (msg: string) => {
-		if (!msg.includes("Could not parse CSS stylesheet")) {
-			console.error(msg);
-		}
-	});
-	vc.on("warn", console.warn);
-	vc.on("info", console.info);
-	return vc;
-}
-
-/**
- * Run defuddle over the page HTML to extract the main content as markdown,
- * resolving relative links against the final URL. Returns null when
- * defuddle throws or finds too little to be a real article.
- */
-async function extractArticle(
-	html: string,
-	url: string,
-): Promise<Article | null> {
-	try {
-		// jsdom and defuddle load on the first page read rather than at
-		// import: jsdom alone is a full browser DOM, over 100 MB.
-		const { JSDOM, VirtualConsole } = await import("jsdom");
-		const { Defuddle } = await import("defuddle/node");
-		const dom = new JSDOM(html, {
-			url,
-			virtualConsole: quietVirtualConsole(VirtualConsole),
-		});
-		const result = await Defuddle(dom.window.document, url, {
-			markdown: true,
-			useAsync: false,
-		});
-		if (!result || result.wordCount < MIN_ARTICLE_WORDS) return null;
-		return {
-			markdown: result.contentMarkdown ?? result.content ?? "",
-			title: result.title ?? "",
-			wordCount: result.wordCount,
-		};
-	} catch {
-		// Defuddle or JSDOM threw (e.g., CSS parse errors on a hostile
-		// page). Article extraction is optional; the bundle still has the
-		// inner text, DOM and screenshots, so we report no article.
-		return null;
-	}
 }
 
 export { diskSink } from "./envelope/sink.js";
@@ -451,7 +400,7 @@ export async function capturePage(
 				document.body?.innerText ?? document.documentElement?.textContent ?? "",
 		),
 	);
-	const article = await deps.extractArticle(html, finalUrl);
+	const article = await deps.extractArticle(html, finalUrl, { signal });
 	const title = article?.title || (await page.title());
 
 	throwIfAborted(signal);
