@@ -32,6 +32,25 @@ export interface PublishOutcome {
 	outcomes: OpOutcome[];
 }
 
+/** How a caller may watch and stop a publish. */
+export interface PublishOptions {
+	/**
+	 * Stops the publish between operations. The one in flight is left to
+	 * finish, since a request already sent may land whatever happens
+	 * here, and every operation after it is reported as not sent.
+	 */
+	signal?: AbortSignal;
+	/**
+	 * Told about each operation as soon as it has run, before the next
+	 * one starts. This is where a caller records what landed, so a
+	 * session that dies partway leaves a record a retry can trust.
+	 */
+	onOutcome?: (outcome: OpOutcome) => Promise<void>;
+}
+
+/** What an operation left unsent by a stop says about itself. */
+export const STOPPED_BEFORE_SENT = "stopped before this was sent";
+
 /** The message an unusable error becomes. */
 function messageOf(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -110,6 +129,20 @@ async function perform(
 	return undefined;
 }
 
+/** Perform one operation and say what became of it. */
+async function attempt(
+	op: PlannedOp,
+	provider: ReviewProvider,
+	change: ChangeRef,
+): Promise<OpOutcome> {
+	try {
+		const posted = await perform(op, provider, change);
+		return { op, ok: true, itemIds: op.itemIds, ...(posted ? { posted } : {}) };
+	} catch (error) {
+		return { op, ok: false, itemIds: op.itemIds, error: messageOf(error) };
+	}
+}
+
 /**
  * Run a compiled plan against a provider.
  *
@@ -121,6 +154,7 @@ async function perform(
 export async function publishPlan(
 	plan: PublishPlan,
 	provider: ReviewProvider,
+	options: PublishOptions = {},
 ): Promise<PublishOutcome> {
 	if (plan.ops.length === 0) return { ok: true, outcomes: [] };
 
@@ -141,22 +175,16 @@ export async function publishPlan(
 	const change = plan.target.change;
 	const outcomes: OpOutcome[] = [];
 	for (const op of plan.ops) {
-		try {
-			const posted = await perform(op, provider, change);
-			outcomes.push({
-				op,
-				ok: true,
-				itemIds: op.itemIds,
-				...(posted ? { posted } : {}),
-			});
-		} catch (error) {
-			outcomes.push({
-				op,
-				ok: false,
-				itemIds: op.itemIds,
-				error: messageOf(error),
-			});
-		}
+		const outcome = options.signal?.aborted
+			? {
+					op,
+					ok: false,
+					itemIds: op.itemIds,
+					error: STOPPED_BEFORE_SENT,
+				}
+			: await attempt(op, provider, change);
+		outcomes.push(outcome);
+		await options.onOutcome?.(outcome);
 	}
 
 	return { ok: outcomes.every((entry) => entry.ok), outcomes };

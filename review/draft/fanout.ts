@@ -23,6 +23,7 @@
 
 import type { ChangeRef } from "../change.js";
 import type { ReviewProvider } from "../provider.js";
+import type { ReviewDraft } from "./handle.js";
 import type { PublishPlan } from "./plan.js";
 import { type PublishOutcome, publishPlan } from "./publish.js";
 
@@ -32,6 +33,13 @@ export interface StackPublishEntry {
 	ref: string;
 	change: ChangeRef;
 	plan: PublishPlan;
+	/**
+	 * The draft the plan was compiled from. Given one, the publish goes
+	 * through it, so what lands is taken out of the draft as it lands
+	 * and publishing the stack again sends only what is left. Without
+	 * one the plan is sent and nothing is recorded.
+	 */
+	draft?: ReviewDraft;
 }
 
 /** What became of one change. */
@@ -62,13 +70,19 @@ export interface StackPublishOutcome {
 export async function publishAcross(
 	entries: readonly StackPublishEntry[],
 	provider: ReviewProvider,
+	options: { signal?: AbortSignal } = {},
 ): Promise<StackPublishOutcome> {
 	const changes: ChangePublishOutcome[] = [];
 	const landed: string[] = [];
 	const remaining: string[] = [];
+	const stop = options.signal ? { signal: options.signal } : {};
 
 	for (const entry of entries) {
-		const outcome = await publishPlan(entry.plan, provider);
+		// A stop reaches every change after it through the plan's own
+		// check, which reports each of their operations as not sent.
+		const outcome = entry.draft
+			? await entry.draft.publish(entry.plan, provider, stop)
+			: await publishPlan(entry.plan, provider, stop);
 		changes.push({ ref: entry.ref, change: entry.change, outcome });
 		// A plan with no operations lands trivially. Calling it remaining
 		// would keep a retry alive forever over a change nobody had a

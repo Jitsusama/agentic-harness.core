@@ -54,8 +54,16 @@ export interface ReviewDraft {
 	setVerdict(verdict: Verdict, summary?: string): Promise<void>;
 	remove(itemId: string): Promise<void>;
 	plan(context: PlanContext): PublishPlan;
-	/** Publish, then keep only what did not land. */
-	publish(plan: PublishPlan, provider: ReviewProvider): Promise<PublishOutcome>;
+	/**
+	 * Publish, keeping only what did not land. Each operation that lands
+	 * is taken out of the saved draft before the next is sent, so a
+	 * session that dies partway leaves a draft a retry can trust.
+	 */
+	publish(
+		plan: PublishPlan,
+		provider: ReviewProvider,
+		options?: { signal?: AbortSignal },
+	): Promise<PublishOutcome>;
 	render(options?: RenderOptions): ReviewDocument;
 }
 
@@ -128,23 +136,24 @@ function handleFor(initial: DraftState, deps: DraftDeps): ReviewDraft {
 
 		plan: (context) => compilePlan(state, context),
 
-		async publish(plan, provider) {
-			const outcome = await publishPlan(plan, provider);
-			let next = state;
-			for (const entry of outcome.outcomes) {
-				if (!entry.ok) continue;
-				for (const itemId of entry.itemIds) {
-					next = removeItem(next, itemId);
-				}
-				// The verdict rode on the review, so it has landed too.
-				const carriedVerdict =
-					entry.op.kind === "review" || entry.op.kind === "comment";
-				if (carriedVerdict) {
-					next = { ...next, verdict: undefined, summary: undefined };
-				}
-			}
-			await commit(next);
-			return outcome;
+		async publish(plan, provider, options = {}) {
+			return publishPlan(plan, provider, {
+				...(options.signal ? { signal: options.signal } : {}),
+				onOutcome: async (entry) => {
+					if (!entry.ok) return;
+					let next = state;
+					for (const itemId of entry.itemIds) {
+						next = removeItem(next, itemId);
+					}
+					// The verdict rode on the review, so it has landed too.
+					const carriedVerdict =
+						entry.op.kind === "review" || entry.op.kind === "comment";
+					if (carriedVerdict) {
+						next = { ...next, verdict: undefined, summary: undefined };
+					}
+					await commit(next);
+				},
+			});
 		},
 
 		render: (options) => renderDraft(state, options),
