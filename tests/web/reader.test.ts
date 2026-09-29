@@ -316,6 +316,24 @@ describe("capturePage", () => {
 		expect(cap.title).toBe("Fallback Title");
 	});
 
+	it("hands its signal to the article extraction, so a stop reaches it", async () => {
+		const controller = new AbortController();
+		let handed: AbortSignal | undefined;
+		await capturePage(
+			fakePage("https://example.com/final"),
+			"https://example.com/final",
+			controller.signal,
+			{
+				...deps,
+				extractArticle: async (_html, _url, options) => {
+					handed = options?.signal;
+					return null;
+				},
+			},
+		);
+		expect(handed).toBe(controller.signal);
+	});
+
 	it("honours a cancelled signal, and says it was cancelled", async () => {
 		const controller = new AbortController();
 		controller.abort();
