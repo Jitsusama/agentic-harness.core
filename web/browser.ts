@@ -12,7 +12,6 @@
  * one profile no matter how many extensions reach for it.
  */
 
-import { execFileSync } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -28,6 +27,9 @@ import type {
 import { processGlobal } from "../internal/process-global.js";
 import { abortError, type Bounds, bounded } from "./bound.js";
 import { CookieJar, cookieData } from "./jar.js";
+import { findProcsByProfile, verifyBrowser } from "./procs.js";
+
+export { namesProfile } from "./procs.js";
 
 /**
  * puppeteer, loaded when a browser is first launched or joined rather
@@ -412,62 +414,6 @@ export function isPidAlive(pid: number): boolean {
 		return true;
 	} catch (err) {
 		return (err as NodeJS.ErrnoException).code === "EPERM";
-	}
-}
-
-/**
- * Confirm a single pid is still the Chrome we launched for `profileDir`,
- * by matching its --user-data-dir argument exactly. This guards the
- * kill against a reused pid now owned by an unrelated process.
- */
-function verifyBrowser(pid: number, profileDir: string): boolean {
-	try {
-		const cmd = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
-			encoding: "utf8",
-		});
-		return namesProfile(cmd, profileDir);
-	} catch {
-		return false;
-	}
-}
-
-function escapeRegExp(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * True when `command` carries this exact profile as its
- * --user-data-dir. Both sides of the value are anchored, so neither a
- * longer sibling path nor a differently-prefixed flag can collide.
- */
-export function namesProfile(command: string, profileDir: string): boolean {
-	return new RegExp(
-		`(?:^|\\s)--user-data-dir=${escapeRegExp(profileDir)}(?:\\s|$)`,
-	).test(command);
-}
-
-/**
- * Pids that still name `profileDir` as their --user-data-dir, matched
- * as an exact argument so a longer sibling path never collides. Used
- * only to rediscover an orphan whose owner is already proven dead.
- */
-function findProcsByProfile(profileDir: string): number[] | undefined {
-	try {
-		const out = execFileSync("ps", ["-eo", "pid=,command="], {
-			encoding: "utf8",
-			maxBuffer: 8 * 1024 * 1024,
-		});
-		const pids: number[] = [];
-		for (const line of out.split("\n")) {
-			if (!namesProfile(line, profileDir)) continue;
-			const pid = Number.parseInt(line.trim(), 10);
-			if (Number.isFinite(pid) && pid !== process.pid) pids.push(pid);
-		}
-		return pids;
-	} catch {
-		// The probe itself failed: signal "unknown", not "none", so a
-		// still-running orphan is not mistaken for an empty result.
-		return undefined;
 	}
 }
 
