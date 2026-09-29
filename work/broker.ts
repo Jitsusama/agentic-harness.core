@@ -49,6 +49,18 @@ export interface HeldTree {
 	owners?: Owner[];
 }
 
+/**
+ * How one call on a tree may be stopped.
+ *
+ * Optional on every call, so a provider written before this existed
+ * still satisfies the contract: it just cannot be stopped, which is
+ * where every provider stood until now.
+ */
+export interface TreeCallOptions {
+	/** The caller giving up. A provider stops whatever it started. */
+	signal?: AbortSignal;
+}
+
 /** Something that can cut a tree and take it back. */
 export interface TreeProvider extends TreeProviderInfo {
 	/**
@@ -56,12 +68,15 @@ export interface TreeProvider extends TreeProviderInfo {
 	 * that no held tree answers it, so a provider does not need to
 	 * dedupe.
 	 */
-	ensure(request: TreeRequest): Promise<{ path: string }>;
+	ensure(
+		request: TreeRequest,
+		options?: TreeCallOptions,
+	): Promise<{ path: string }>;
 	/**
 	 * Give up whatever backs this tree. Providers decide whether
 	 * that means deleting it, leaving it, or nothing at all.
 	 */
-	release(held: HeldTree): Promise<void>;
+	release(held: HeldTree, options?: TreeCallOptions): Promise<void>;
 }
 
 /**
@@ -100,9 +115,9 @@ export type ReleaseOutcome =
 /** Custody of the trees a session is using. */
 export interface TreeBroker {
 	/** Get a tree for this request, reusing one where possible. */
-	ensure(request: TreeRequest): Promise<HeldTree>;
+	ensure(request: TreeRequest, options?: TreeCallOptions): Promise<HeldTree>;
 	/** Hand a tree back to the provider that cut it, and say what happened. */
-	release(held: HeldTree): Promise<ReleaseOutcome>;
+	release(held: HeldTree, options?: TreeCallOptions): Promise<ReleaseOutcome>;
 	/**
 	 * Every tree held, this session's first and then any left behind by an
 	 * earlier one.
@@ -206,7 +221,7 @@ export function createTreeBroker(
 			return [...trees, ...(earlier ?? [])];
 		},
 
-		async ensure(request) {
+		async ensure(request, options) {
 			// Searches remembered trees too, so a second session reuses what the
 			// first cut instead of cutting a second tree for the same thing.
 			//
@@ -231,7 +246,7 @@ export function createTreeBroker(
 				// directory is still there and still the right one to hand
 				// back; only the check goes missing, which is where this
 				// stood for every tree until now.
-				if (by !== undefined) await by.ensure(request);
+				if (by !== undefined) await by.ensure(request, options);
 				// Taking a tree is holding it, however it was obtained. A
 				// reused tree still carries whoever cut it, and that session
 				// is usually gone: without this, the tree this session is
@@ -259,7 +274,7 @@ export function createTreeBroker(
 				);
 			}
 
-			const { path } = await choice.provider.ensure(request);
+			const { path } = await choice.provider.ensure(request, options);
 			const held: HeldTree = {
 				identity: treeIdentity(request),
 				path,
@@ -278,7 +293,7 @@ export function createTreeBroker(
 			return held;
 		},
 
-		async release(held) {
+		async release(held, options) {
 			const all = roster();
 			const owner = all.find((provider) => provider.id === held.providerId);
 
@@ -316,7 +331,7 @@ export function createTreeBroker(
 			// half-gone. A record for a tree still on disk is recoverable on the
 			// next cut; a record for a broken one is a trap.
 			memory?.forget(held.path);
-			await owner.release(held);
+			await owner.release(held, options);
 			return { kind: "released" };
 		},
 

@@ -34,15 +34,27 @@ const GENERAL = 0;
  * specificity.
  */
 export function createGitTreeProvider(deps: {
+	/** Runs git for a call nobody can stop. */
 	exec: Exec;
+	/**
+	 * Runs git for a call that can be stopped, stopping git with it.
+	 * Without it every call uses `exec`, and a stop reaches only the
+	 * promise waiting on git rather than git itself.
+	 */
+	execFor?: (signal: AbortSignal) => Exec;
 	stateDir: string;
 }): TreeProvider {
+	const execOf = (signal: AbortSignal | undefined): Exec =>
+		signal !== undefined && deps.execFor !== undefined
+			? deps.execFor(signal)
+			: deps.exec;
 	return {
 		id: ID,
 		specificity: GENERAL,
 		appliesTo: () => true,
 
-		async ensure(request) {
+		async ensure(request, options) {
+			const exec = execOf(options?.signal);
 			const source = treeSource(request.repo);
 			if (source.kind === "unknown") {
 				throw new Error(
@@ -64,12 +76,7 @@ export function createGitTreeProvider(deps: {
 			// session to review a commit found the tree its predecessor cut and
 			// died on `fatal: already exists`, then fell back to letting
 			// reviewers read the working checkout.
-			const standing = await deps.exec("git", [
-				"-C",
-				path,
-				"rev-parse",
-				"HEAD",
-			]);
+			const standing = await exec("git", ["-C", path, "rev-parse", "HEAD"]);
 			if (standing.code === 0) {
 				const head = standing.stdout.trim();
 				// A snapshot's commit is part of its identity, so a tree under
@@ -89,7 +96,7 @@ export function createGitTreeProvider(deps: {
 					? ["--detach", path, request.commit]
 					: [path, request.branch];
 			await run(
-				deps.exec,
+				exec,
 				"git",
 				["-C", source.path, "worktree", "add", ...at],
 				`Cutting a tree for ${request.purpose}`,
@@ -97,7 +104,7 @@ export function createGitTreeProvider(deps: {
 			return { path };
 		},
 
-		async release(held) {
+		async release(held, options) {
 			// Scoped to the tree itself, which is the one repo guaranteed
 			// to know about it. Without a -C this ran against whatever
 			// repo the process happened to be sitting in, and git then
@@ -106,7 +113,7 @@ export function createGitTreeProvider(deps: {
 			// names its main repo, so asking from inside is enough and
 			// needs no source path carried on the held tree.
 			await run(
-				deps.exec,
+				execOf(options?.signal),
 				"git",
 				["-C", held.path, "worktree", "remove", held.path],
 				`Releasing the tree at ${displayPath(held.path)}`,

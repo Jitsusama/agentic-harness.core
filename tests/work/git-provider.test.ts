@@ -247,4 +247,51 @@ describe("a tree that is already there", () => {
 
 		expect(seen.some((args) => args.includes("add"))).toBe(true);
 	});
+
+	it("runs a call's git under that call's signal, so stopping the call stops git", async () => {
+		const standing = fakeExec(ok);
+		const stoppable = fakeExec(ok);
+		const asked: AbortSignal[] = [];
+		const provider = createGitTreeProvider({
+			exec: standing.exec,
+			execFor(signal) {
+				asked.push(signal);
+				return stoppable.exec;
+			},
+			stateDir: "/state",
+		});
+		const { signal } = new AbortController();
+
+		const held = await provider.ensure(snapshot(), { signal });
+		await provider.release(
+			{
+				identity: treeIdentity(snapshot()),
+				path: held.path,
+				providerId: provider.id,
+			},
+			{ signal },
+		);
+
+		expect(asked).toEqual([signal, signal]);
+		expect(addition(stoppable.calls)).toBeDefined();
+		expect(stoppable.calls.some((call) => call.args.includes("remove"))).toBe(
+			true,
+		);
+		expect(standing.calls).toEqual([]);
+	});
+
+	it("keeps its standing exec for a call nobody can stop", async () => {
+		const standing = fakeExec(ok);
+		const provider = createGitTreeProvider({
+			exec: standing.exec,
+			execFor: () => {
+				throw new Error("asked for a stoppable exec with no signal");
+			},
+			stateDir: "/state",
+		});
+
+		await provider.ensure(snapshot());
+
+		expect(addition(standing.calls)).toBeDefined();
+	});
 });
