@@ -281,8 +281,12 @@ export type {
 	PublishPlan,
 } from "./draft/plan.js";
 export { compilePlan } from "./draft/plan.js";
-export type { OpOutcome, PublishOutcome } from "./draft/publish.js";
-export { publishPlan } from "./draft/publish.js";
+export type {
+	OpOutcome,
+	PublishOptions,
+	PublishOutcome,
+} from "./draft/publish.js";
+export { publishPlan, STOPPED_BEFORE_SENT } from "./draft/publish.js";
 export type { RenderOptions, ReviewDocument } from "./draft/render.js";
 export { renderDraft } from "./draft/render.js";
 export type {

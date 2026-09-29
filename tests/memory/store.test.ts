@@ -27,6 +27,23 @@ describe("memory store", () => {
 		]);
 	});
 
+	it("hands each retain back its own fact when several run at once", async () => {
+		// Parallel tool calls retain side by side. Answering with the
+		// newest row in the scope told one call it had saved the other's
+		// fact, and the id it handed on then edited the wrong one.
+		const facts = await Promise.all(
+			["first", "second", "third"].map((text) =>
+				store.retain({ scope: quest, text }),
+			),
+		);
+		expect(facts.map((fact) => fact.text)).toEqual([
+			"first",
+			"second",
+			"third",
+		]);
+		expect(new Set(facts.map((fact) => fact.id)).size).toBe(3);
+	});
+
 	it("does not recall facts from another quest's scope", async () => {
 		await store.retain({ scope: quest, text: "mine" });
 		await store.retain({ scope: other, text: "theirs" });

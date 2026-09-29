@@ -9,7 +9,15 @@
  * fall out of step with the files it describes.
  */
 
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import {
+	mkdir,
+	readdir,
+	readFile,
+	rename,
+	rm,
+	writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import type { ReviewTarget } from "../change.js";
 import type { Verdict } from "../conversation.js";
@@ -113,7 +121,22 @@ export function createDraftStore(root: string): DraftStore {
 		async save(state) {
 			await mkdir(root, { recursive: true });
 			const path = join(root, fileFor(state.id));
-			await writeFile(path, `${JSON.stringify(state, null, "\t")}\n`, "utf8");
+			// Written beside the draft and renamed over it, so a reader finds
+			// the old draft or the new one and never a file part-way through
+			// being written, which reads as no draft at all. The name ends
+			// in .tmp, so a listing never mistakes one for a draft.
+			const staging = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+			try {
+				await writeFile(
+					staging,
+					`${JSON.stringify(state, null, "\t")}\n`,
+					"utf8",
+				);
+				await rename(staging, path);
+			} catch (error) {
+				await rm(staging, { force: true });
+				throw error;
+			}
 		},
 
 		async load(id) {

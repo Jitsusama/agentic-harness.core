@@ -23,15 +23,18 @@
  * round.
  */
 
+import { randomBytes } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { withFileLock } from "../internal/file-lock.js";
 import {
 	askedOnce,
 	isOwner,
@@ -141,6 +144,15 @@ export function createTreeMemory(dir: string): TreeMemory {
 	const fileFor = (key: string): string =>
 		join(dir, `${key.replaceAll("/", "-")}.json`);
 
+	/** Run a rewrite of one record with every other session held off it. */
+	async function underLock(
+		key: string,
+		fn: () => Promise<void>,
+	): Promise<void> {
+		mkdirSync(dir, { recursive: true });
+		await withFileLock(fileFor(key), fn);
+	}
+
 	function all(): readonly { at: string; held: HeldTree }[] {
 		if (!existsSync(dir)) return [];
 		return readdirSync(dir)
@@ -168,11 +180,20 @@ export function createTreeMemory(dir: string): TreeMemory {
 	return {
 		remember(held) {
 			mkdirSync(dir, { recursive: true });
-			writeFileSync(
-				fileFor(held.identity.key),
-				JSON.stringify(held, null, 2),
-				"utf8",
-			);
+			const file = fileFor(held.identity.key);
+			// Written beside the record and renamed over it, so another
+			// session reading at the same moment finds the old record or the
+			// new one. A half-written one reads as no record, and a holder
+			// rewriting the owners from no record drops everybody else. The
+			// name does not end in .json, so a listing never reads one.
+			const staging = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+			try {
+				writeFileSync(staging, JSON.stringify(held, null, 2), "utf8");
+				renameSync(staging, file);
+			} catch (error) {
+				rmSync(staging, { force: true });
+				throw error;
+			}
 		},
 
 		async rememberHeldByUs(held, facts = systemFacts) {
@@ -194,13 +215,17 @@ export function createTreeMemory(dir: string): TreeMemory {
 			// snapshot is shareable, so two sessions can hold one tree, and
 			// the one that wrote last is not the only one that would miss it.
 			// Dead holders are left to be filtered on the way out rather than
-			// probed here, since this is on the path of every cut.
-			const before = (
-				this.recall().find((tree) => tree.path === held.path)?.owners ??
-				held.owners ??
-				[]
-			).filter((one) => isOwner(one) && !sameOwner(one, us));
-			this.remember({ ...held, owners: [...before, us] });
+			// probed here, since this is on the path of every cut. Read and
+			// written under the record's lock, since another session adding
+			// itself between the two would otherwise be written out again.
+			await underLock(held.identity.key, async () => {
+				const before = (
+					this.recall().find((tree) => tree.path === held.path)?.owners ??
+					held.owners ??
+					[]
+				).filter((one) => isOwner(one) && !sameOwner(one, us));
+				this.remember({ ...held, owners: [...before, us] });
+			});
 		},
 
 		forget(path) {
@@ -243,13 +268,19 @@ export function createTreeMemory(dir: string): TreeMemory {
 		},
 
 		async forgetUsAsHolder(path, facts = systemFacts) {
-			const tree = this.recall().find((one) => one.path === path);
-			if (tree === undefined) return;
+			const found = this.recall().find((one) => one.path === path);
+			if (found === undefined) return;
 			const us = await ownerNow(facts);
 			if (us === undefined) return;
-			this.remember({
-				...tree,
-				owners: named(tree).filter((owner) => !sameOwner(owner, us)),
+			// Read again under the lock: what was found above may already
+			// be missing a holder that arrived since.
+			await underLock(found.identity.key, async () => {
+				const tree = this.recall().find((one) => one.path === path);
+				if (tree === undefined) return;
+				this.remember({
+					...tree,
+					owners: named(tree).filter((owner) => !sameOwner(owner, us)),
+				});
 			});
 		},
 
