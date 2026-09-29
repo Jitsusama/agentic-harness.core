@@ -25,6 +25,22 @@ const MAX_RATE_LIMIT_RETRIES = 10;
 const INITIAL_BACKOFF_MS = 1000;
 
 /**
+ * How long one request may go unanswered. Slack answers in well under a
+ * second; a request still open after this is a network that dropped it,
+ * and without a clock the tool that made it never comes back.
+ */
+export const REQUEST_TIMEOUT_MS = 30_000;
+
+/** How long a file download or upload may take, body included. */
+export const TRANSFER_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** How a client bounds its requests. */
+export interface SlackClientOptions {
+	/** How long one request may go unanswered. `REQUEST_TIMEOUT_MS` when absent. */
+	requestTimeoutMs?: number;
+}
+
+/**
  * Thrown when a Slack API call exhausts its rate limit retry
  * budget. Callers can catch this specifically to implement
  * backpressure (e.g. reducing concurrency) before retrying.
@@ -98,7 +114,17 @@ export class SlackClient {
 	constructor(
 		private readonly token: string,
 		private readonly cookie?: string,
+		private readonly options: SlackClientOptions = {},
 	) {}
+
+	/** The caller's signal joined to one request's clock. */
+	private bounded(
+		signal: AbortSignal | undefined,
+		ms = this.options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
+	): AbortSignal {
+		const clock = AbortSignal.timeout(ms);
+		return signal === undefined ? clock : AbortSignal.any([signal, clock]);
+	}
 
 	/**
 	 * Call a Slack Web API method.
@@ -132,15 +158,13 @@ export class SlackClient {
 		let rateLimitHits = 0;
 
 		for (let attempt = 0; attempt < MAX_ERROR_RETRIES; attempt++) {
-			if (signal?.aborted) {
-				throw new Error("Request aborted");
-			}
+			if (signal?.aborted) throw aborted(signal);
 
 			const response = await fetch(`${SLACK_API_BASE}/${method}`, {
 				method: "POST",
 				headers,
 				body: body.toString(),
-				signal,
+				signal: this.bounded(signal),
 			});
 
 			if (response.status === 429) {
@@ -148,7 +172,7 @@ export class SlackClient {
 					throw new RateLimitError(method, rateLimitHits);
 				}
 				const retryAfter = Number(response.headers.get("Retry-After") || "1");
-				await sleep(retryAfter * 1000);
+				await sleep(retryAfter * 1000, signal);
 				// Don't count rate limits against the error retry
 				// budget, since the API is explicitly telling us to wait.
 				attempt--;
@@ -169,7 +193,7 @@ export class SlackClient {
 						throw new RateLimitError(method, rateLimitHits);
 					}
 					const backoff = INITIAL_BACKOFF_MS * 2 ** rateLimitHits;
-					await sleep(backoff);
+					await sleep(backoff, signal);
 					attempt--;
 					continue;
 				}
@@ -243,7 +267,7 @@ export class SlackClient {
 		const response = await fetch(url, {
 			method: "GET",
 			headers,
-			signal: opts?.signal,
+			signal: this.bounded(opts?.signal, TRANSFER_TIMEOUT_MS),
 		});
 
 		if (!response.ok) {
@@ -300,7 +324,7 @@ export class SlackClient {
 			method: "POST",
 			headers,
 			body: uploadable(body),
-			signal,
+			signal: this.bounded(signal, TRANSFER_TIMEOUT_MS),
 		});
 
 		if (!response.ok) {
@@ -341,6 +365,24 @@ function describeError(error?: string): string {
 		: `Slack API error: ${error}`;
 }
 
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) return Promise.reject(aborted(signal));
+	return new Promise((resolve, reject) => {
+		const onAbort = (): void => {
+			clearTimeout(timer);
+			reject(aborted(signal));
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+/** The error a stopped call rejects with: the signal's own, when it is one. */
+function aborted(signal: AbortSignal | undefined): Error {
+	const reason = signal?.reason;
+	if (reason instanceof Error && reason.name === "AbortError") return reason;
+	return new DOMException("The Slack call was stopped.", "AbortError");
 }

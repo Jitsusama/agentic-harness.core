@@ -518,10 +518,15 @@ function reapOrphanProfiles(): void {
 }
 
 /**
- * Kill Chrome and exit on the signals that would otherwise
- * orphan it (SIGINT, SIGTERM, SIGHUP), and on clean exit. A
- * hard-killed subagent gets SIGTERM, so this is what keeps the
- * RELY01 orphan from accumulating.
+ * Kill Chrome on the signals that would otherwise orphan it (SIGINT,
+ * SIGTERM, SIGHUP), and on clean exit. A hard-killed subagent gets
+ * SIGTERM, so this is what keeps the RELY01 orphan from accumulating.
+ *
+ * The exit is not ours to take. A host listening for the same signal
+ * saves its state and restores the terminal there, and calling
+ * `process.exit` first ends the process before it can; so with another
+ * listener this only kills Chrome, and alone it raises the signal again
+ * so the default, being killed by it, still happens.
  */
 function installLifecycleHandlers(): void {
 	const state = sharedState();
@@ -531,7 +536,8 @@ function installLifecycleHandlers(): void {
 	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
 		process.once(signal, () => {
 			killBrowserSync();
-			process.exit(0);
+			if (process.listenerCount(signal) === 0)
+				process.kill(process.pid, signal);
 		});
 	}
 }
@@ -678,6 +684,11 @@ async function launchOnce(executablePath: string): Promise<Browser> {
 			"--remote-debugging-port=0",
 		],
 		dumpio: false,
+		// Puppeteer's own handlers kill Chrome and then call process.exit,
+		// taking the exit from the host; the ones above kill it without.
+		handleSIGINT: false,
+		handleSIGTERM: false,
+		handleSIGHUP: false,
 		// Talk to Chrome over stdio rather than a DevTools websocket for
 		// *this* process's own connection. A websocket is a TCP handle
 		// that holds the event loop and cannot be unref'd through

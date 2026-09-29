@@ -107,18 +107,15 @@ export async function pollForDeviceAuthorization(
 	interval: number,
 	signal?: AbortSignal,
 ): Promise<Credentials> {
-	const pollInterval = (interval || 5) * 1000; // Convert to milliseconds
+	let pollInterval = (interval || 5) * 1000; // Convert to milliseconds
 
-	while (!signal?.aborted) {
-		// We wait before polling.
-		await new Promise((resolve) => setTimeout(resolve, pollInterval));
+	for (;;) {
+		// We wait before polling, and giving up ends the wait, not the next poll.
+		await pause(pollInterval, signal);
 
-		if (signal?.aborted) {
-			throw new Error("Authorization cancelled");
-		}
-
+		let response: Response;
 		try {
-			const response = await fetch("https://oauth2.googleapis.com/token", {
+			response = await fetch("https://oauth2.googleapis.com/token", {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/x-www-form-urlencoded",
@@ -129,52 +126,76 @@ export async function pollForDeviceAuthorization(
 					device_code: deviceCode,
 					grant_type: "urn:ietf:params:oauth:grant-type:device_code",
 				}),
+				signal,
 			});
-
-			if (!response.ok) {
-				const error = await response.json();
-
-				// These errors mean we should keep polling.
-				if (
-					error.error === "authorization_pending" ||
-					error.error === "slow_down"
-				) {
-					continue;
-				}
-
-				// These errors mean authorization failed.
-				if (error.error === "expired_token") {
-					throw new Error("Authorization code expired. Please try again.");
-				}
-
-				if (error.error === "access_denied") {
-					throw new Error("Authorization denied by user.");
-				}
-
-				throw new Error(
-					`Token exchange failed: ${error.error_description || error.error}`,
-				);
-			}
-
-			// The exchange succeeded, so we convert the response to our credentials format.
-			const tokenResponse = (await response.json()) as DeviceFlowTokenResponse;
-
-			return {
-				access_token: tokenResponse.access_token,
-				refresh_token: tokenResponse.refresh_token,
-				expiry_date: Date.now() + tokenResponse.expires_in * 1000,
-				token_type: tokenResponse.token_type,
-				scope: tokenResponse.scope,
-			};
-		} catch (error) {
-			// Our own authorization errors should bubble up rather than being retried.
-			if (error instanceof Error && error.message.includes("Authorization")) {
-				throw error;
-			}
+		} catch {
+			// A network that dropped one poll may answer the next; a person
+			// who gave up will not.
+			if (signal?.aborted) throw cancelled(signal);
+			continue;
 		}
-	}
 
-	throw new Error("Authorization cancelled");
+		if (!response.ok) {
+			const error = await response.json();
+
+			// These errors mean we should keep polling.
+			if (error.error === "authorization_pending") continue;
+			if (error.error === "slow_down") {
+				// RFC 8628: every slow_down adds five seconds to the interval.
+				pollInterval += SLOW_DOWN_MS;
+				continue;
+			}
+
+			// Anything else is an answer that will not change by asking again,
+			// which the old catch-all retried until the code expired.
+			if (error.error === "expired_token") {
+				throw new Error("Authorization code expired. Please try again.");
+			}
+			if (error.error === "access_denied") {
+				throw new Error("Authorization denied by user.");
+			}
+			throw new Error(
+				`Token exchange failed: ${error.error_description || error.error}`,
+			);
+		}
+
+		// The exchange succeeded, so we convert the response to our credentials format.
+		const tokenResponse = (await response.json()) as DeviceFlowTokenResponse;
+
+		return {
+			access_token: tokenResponse.access_token,
+			refresh_token: tokenResponse.refresh_token,
+			expiry_date: Date.now() + tokenResponse.expires_in * 1000,
+			token_type: tokenResponse.token_type,
+			scope: tokenResponse.scope,
+		};
+	}
+}
+
+/** RFC 8628's increment for each `slow_down` answer. */
+const SLOW_DOWN_MS = 5000;
+
+/** Waits `ms`, or rejects with an `AbortError` as soon as `signal` fires. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	if (signal?.aborted) return Promise.reject(cancelled(signal));
+	return new Promise((resolve, reject) => {
+		const onAbort = (): void => {
+			clearTimeout(timer);
+			reject(cancelled(signal));
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+/** The error a cancelled authorization rejects with. */
+function cancelled(signal: AbortSignal | undefined): Error {
+	const reason = signal?.reason;
+	if (reason instanceof Error && reason.name === "AbortError") return reason;
+	return new DOMException("Authorization cancelled", "AbortError");
 }
 
 /**
