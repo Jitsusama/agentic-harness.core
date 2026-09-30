@@ -64,6 +64,115 @@ describe("runSideCompletion error paths", () => {
 	});
 });
 
+const flash = { id: "glm-5p3-flash", provider: "fireworks" };
+const opus = { id: "claude-opus", provider: "anthropic" };
+const notDeployed =
+	'404 {"error":{"message":"Model not found, inaccessible, and/or not deployed"}}';
+
+/** A completion result that reports an error. */
+function failed(errorMessage: string) {
+	return {
+		content: [],
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "error",
+		errorMessage,
+	};
+}
+
+describe("runSideCompletion when a listed model cannot be reached", () => {
+	// A registry can list a model its provider no longer serves, so the
+	// first cheap model is not always one that answers.
+	it("moves on to the next model when one is not deployed", async () => {
+		const tried: string[] = [];
+		const registry: CompletionRegistry = {
+			getAvailable: () => [opus, glm, flash],
+			find: () => undefined,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k" }),
+		};
+		const complete: CompleteSimple = async (model) => {
+			tried.push(model.id);
+			if (model.id === glm.id) return failed(notDeployed);
+			return {
+				content: [{ type: "text", text: "drafted" }],
+				usage: failed("").usage,
+				stopReason: "end",
+			};
+		};
+
+		const result = await runSideCompletion(
+			registry,
+			{ systemPrompt: "s", prompt: "hi", current: opus },
+			complete,
+		);
+
+		expect(tried).toEqual(["glm-5.2", "glm-5p3-flash"]);
+		expect(result.ok).toBe(true);
+		expect(result.text).toBe("drafted");
+		expect(result.model).toBe("glm-5p3-flash");
+	});
+
+	it("moves on to the next model when one has no auth", async () => {
+		const tried: string[] = [];
+		const registry: CompletionRegistry = {
+			getAvailable: () => [glm, flash],
+			find: () => undefined,
+			getApiKeyAndHeaders: async (model) =>
+				model.id === glm.id
+					? { ok: false, error: "no key" }
+					: { ok: true, apiKey: "k" },
+		};
+		const complete: CompleteSimple = async (model) => {
+			tried.push(model.id);
+			return {
+				content: [{ type: "text", text: "ok" }],
+				usage: failed("").usage,
+				stopReason: "end",
+			};
+		};
+
+		const result = await runSideCompletion(
+			registry,
+			{ systemPrompt: "s", prompt: "hi" },
+			complete,
+		);
+
+		expect(tried).toEqual(["glm-5p3-flash"]);
+		expect(result.ok).toBe(true);
+	});
+
+	it("falls back to the current model last and names every model tried", async () => {
+		const tried: string[] = [];
+		const registry: CompletionRegistry = {
+			getAvailable: () => [opus, glm, flash],
+			find: () => undefined,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k" }),
+		};
+		const complete: CompleteSimple = async (model) => {
+			tried.push(model.id);
+			return failed(notDeployed);
+		};
+
+		const result = await runSideCompletion(
+			registry,
+			{ systemPrompt: "s", prompt: "hi", current: opus },
+			complete,
+		);
+
+		expect(tried).toEqual(["glm-5.2", "glm-5p3-flash", "claude-opus"]);
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("fireworks/glm-5.2: 404");
+		expect(result.error).toContain("fireworks/glm-5p3-flash: 404");
+		expect(result.error).toContain("anthropic/claude-opus: 404");
+	});
+});
+
 describe("runSideCompletion against a fake completion backend", () => {
 	const registry: CompletionRegistry = {
 		getAvailable: () => [glm],
@@ -158,6 +267,29 @@ describe("runSideCompletion against a fake completion backend", () => {
 
 		expect(result.ok).toBe(false);
 		expect(result.error).toBe("backend refused");
+	});
+
+	it("stays on the model when its error is not about the model being there", async () => {
+		const tried: string[] = [];
+		const two: CompletionRegistry = {
+			getAvailable: () => [glm, flash],
+			find: () => undefined,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k" }),
+		};
+		const complete: CompleteSimple = async (model) => {
+			tried.push(model.id);
+			return failed("rate limited");
+		};
+
+		const result = await runSideCompletion(
+			two,
+			{ systemPrompt: "s", prompt: "hi" },
+			complete,
+		);
+
+		expect(tried).toEqual(["glm-5.2"]);
+		expect(result.ok).toBe(false);
+		expect(result.error).toBe("rate limited");
 	});
 
 	it("surfaces a throwing completion call", async () => {

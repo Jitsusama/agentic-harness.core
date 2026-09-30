@@ -74,6 +74,83 @@ describe("runInvestigation error paths", () => {
 	});
 });
 
+describe("runInvestigation when a listed model cannot be reached", () => {
+	const flash = { id: "glm-5p3-flash", provider: "fireworks" };
+	const notDeployed =
+		'404 {"error":{"message":"Model not found, inaccessible, and/or not deployed"}}';
+	const registry: CompletionRegistry = {
+		getAvailable: () => [glm, flash],
+		find: () => undefined,
+		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k" }),
+	};
+
+	it("moves on to the next model, keeping nothing from the one that failed", async () => {
+		const tried: string[] = [];
+		const complete: CompleteSimple = async (model) => {
+			tried.push(model.id);
+			if (model.id === glm.id) {
+				return {
+					content: [],
+					usage: ZERO_USAGE,
+					stopReason: "error",
+					errorMessage: notDeployed,
+				};
+			}
+			return {
+				content: [{ type: "text", text: "clear" }],
+				usage: ZERO_USAGE,
+				stopReason: "end",
+			};
+		};
+		const prior = [{ role: "user", content: "look", timestamp: 0 }];
+
+		const result = await runInvestigation(
+			registry,
+			{ systemPrompt: "s", messages: prior, tools: [], maxSteps: 3 },
+			complete,
+		);
+
+		expect(tried).toEqual(["glm-5.2", "glm-5p3-flash"]);
+		expect(result.ok).toBe(true);
+		expect(result.model).toBe("glm-5p3-flash");
+		expect(result.steps).toBe(1);
+		expect(result.messages).toHaveLength(2);
+	});
+
+	it("names every model tried when none can be reached", async () => {
+		const complete: CompleteSimple = async () => {
+			throw new Error(notDeployed);
+		};
+
+		const result = await runInvestigation(registry, request, complete);
+
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("fireworks/glm-5.2: completion threw: 404");
+		expect(result.error).toContain(
+			"fireworks/glm-5p3-flash: completion threw: 404",
+		);
+	});
+
+	it("stays on the model when its error is not about the model being there", async () => {
+		const tried: string[] = [];
+		const complete: CompleteSimple = async (model) => {
+			tried.push(model.id);
+			return {
+				content: [],
+				usage: ZERO_USAGE,
+				stopReason: "error",
+				errorMessage: "rate limited",
+			};
+		};
+
+		const result = await runInvestigation(registry, request, complete);
+
+		expect(tried).toEqual(["glm-5.2"]);
+		expect(result.ok).toBe(false);
+		expect(result.error).toBe("rate limited");
+	});
+});
+
 describe("runInvestigation against a fake completion backend", () => {
 	const registry: CompletionRegistry = {
 		getAvailable: () => [glm],

@@ -19,10 +19,12 @@ export {
 	runInvestigation,
 } from "./investigate.js";
 export {
+	isModelUnreachable,
 	looksLikeGlm,
 	type ModelRef,
 	type ModelTarget,
 	pickModel,
+	rankModels,
 } from "./resolve.js";
 export {
 	runSideCompletion,

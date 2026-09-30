@@ -17,7 +17,7 @@
  * care what backend the caller's host runs one through.
  */
 
-import { type ModelRef, pickModel } from "./resolve.js";
+import { isModelUnreachable, type ModelRef, rankModels } from "./resolve.js";
 import type {
 	CompleteSimple,
 	CompletionRegistry,
@@ -117,19 +117,26 @@ function toolCallsOf(content: Block[]): Block[] {
  * each tool result back in, until the model answers with text or
  * `maxSteps` is reached. Every failure path returns `ok: false`
  * with a message rather than throwing.
+ *
+ * Models are tried in `rankModels` order. One that cannot be
+ * reached (no auth, or an opening step whose error says it is not
+ * there) gives way to the next, which starts again from the
+ * caller's messages. Once a model has answered a step it is the
+ * investigation's model; a later failure is the answer. When every
+ * model gives way, the error names each one with its reason.
  */
 export async function runInvestigation(
 	registry: CompletionRegistry,
 	request: InvestigationRequest,
 	complete: CompleteSimple,
 ): Promise<InvestigationResult> {
-	const model = pickModel(
+	const candidates = rankModels(
 		registry.getAvailable(),
 		request.current,
 		{ provider: request.provider, model: request.model },
 		(p, m) => registry.find(p, m),
 	);
-	if (!model) {
+	if (candidates.length === 0) {
 		return {
 			ok: false,
 			text: "",
@@ -140,22 +147,54 @@ export async function runInvestigation(
 		};
 	}
 
+	const reasons: string[] = [];
+	let last = failure(candidates[0], request.messages, "");
+	for (const model of candidates) {
+		// A cancelled caller wants no more models tried on its behalf.
+		if (reasons.length > 0 && request.signal?.aborted) break;
+		const attempt = await investigateOn(model, registry, request, complete);
+		if (!attempt.unreachable) return attempt.result;
+		last = attempt.result;
+		reasons.push(`${model.provider}/${model.id}: ${attempt.result.error}`);
+	}
+	return { ...last, error: reasons.join("; ") };
+}
+
+/** One model's outcome, and whether it says to try the next. */
+interface Attempt {
+	readonly result: InvestigationResult;
+	readonly unreachable: boolean;
+}
+
+/** Resolve `model`'s auth and run the investigation loop on it. */
+async function investigateOn(
+	model: ModelRef,
+	registry: CompletionRegistry,
+	request: InvestigationRequest,
+	complete: CompleteSimple,
+): Promise<Attempt> {
 	let auth: Awaited<ReturnType<CompletionRegistry["getApiKeyAndHeaders"]>>;
 	try {
 		auth = await registry.getApiKeyAndHeaders(model);
 	} catch (err) {
-		return failure(
-			model,
-			request.messages,
-			`auth resolution threw: ${msg(err)}`,
-		);
+		return {
+			result: failure(
+				model,
+				request.messages,
+				`auth resolution threw: ${msg(err)}`,
+			),
+			unreachable: true,
+		};
 	}
 	if (!auth.ok) {
-		return failure(
-			model,
-			request.messages,
-			`auth not configured: ${auth.error}`,
-		);
+		return {
+			result: failure(
+				model,
+				request.messages,
+				`auth not configured: ${auth.error}`,
+			),
+			unreachable: true,
+		};
 	}
 
 	const toolDefs = request.tools.map((t) => ({
@@ -187,14 +226,17 @@ export async function runInvestigation(
 			});
 		} catch (err) {
 			return {
-				ok: false,
-				text: "",
-				provider: model.provider,
-				model: model.id,
-				usage,
-				steps: step - 1,
-				messages,
-				error: `completion threw: ${msg(err)}`,
+				result: {
+					ok: false,
+					text: "",
+					provider: model.provider,
+					model: model.id,
+					usage,
+					steps: step - 1,
+					messages,
+					error: `completion threw: ${msg(err)}`,
+				},
+				unreachable: step === 1 && isModelUnreachable(msg(err)),
 			};
 		}
 
@@ -204,15 +246,20 @@ export async function runInvestigation(
 		messages.push(result);
 
 		if (calls.length === 0) {
+			const failed = result.stopReason === "error";
 			return {
-				ok: result.stopReason !== "error",
-				text: textOf(content),
-				provider: model.provider,
-				model: model.id,
-				usage,
-				steps: step,
-				messages,
-				error: result.errorMessage,
+				result: {
+					ok: !failed,
+					text: textOf(content),
+					provider: model.provider,
+					model: model.id,
+					usage,
+					steps: step,
+					messages,
+					error: result.errorMessage,
+				},
+				unreachable:
+					step === 1 && failed && isModelUnreachable(result.errorMessage ?? ""),
 			};
 		}
 
@@ -246,14 +293,17 @@ export async function runInvestigation(
 	// what we have as a non-error, so the caller can still use any
 	// partial text and the loop never runs unbounded.
 	return {
-		ok: true,
-		text: "",
-		provider: model.provider,
-		model: model.id,
-		usage,
-		steps: request.maxSteps,
-		messages,
-		error: "step budget exhausted",
+		result: {
+			ok: true,
+			text: "",
+			provider: model.provider,
+			model: model.id,
+			usage,
+			steps: request.maxSteps,
+			messages,
+			error: "step budget exhausted",
+		},
+		unreachable: false,
 	};
 }
 
