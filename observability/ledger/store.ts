@@ -226,8 +226,10 @@ class SqliteTurnStore implements TurnStore {
 				await this.fillThinkingLevel(t);
 				continue;
 			}
-			inserted += 1;
-			await this.db.run(
+			// Another session indexing the same logs may have landed this row
+			// since the table was asked, so what counts is whether this
+			// statement wrote it, not whether the probe had seen it.
+			const { changes } = await this.db.run(
 				`INSERT OR IGNORE INTO turns (
 					digest, entry_id, session_id, timestamp, kind, model,
 					tokens_input, tokens_output, tokens_cache_read,
@@ -258,7 +260,9 @@ class SqliteTurnStore implements TurnStore {
 					t.thinkingLevel,
 				],
 			);
+			inserted += changes;
 			await this.sight(t);
+			if (changes === 0) await this.fillThinkingLevel(t);
 		}
 		return inserted;
 	}
@@ -290,9 +294,8 @@ class SqliteTurnStore implements TurnStore {
 	}
 
 	/**
-	 * Replace what is known about a session. The row is a current fact
-	 * rather than an append-only history: a re-index of a log that moved
-	 * quest should report where it ended up.
+	 * Record tool calls, each once however many logs or concurrent passes
+	 * hold it.
 	 */
 	async recordCalls(calls: readonly ToolCallRecord[]): Promise<RecordOutcome> {
 		const fresh = new Map<string, ToolCallRecord>();
@@ -304,9 +307,10 @@ class SqliteTurnStore implements TurnStore {
 			let inserted = 0;
 			for (const c of fresh.values()) {
 				if (known.has(c.digest)) continue;
-				inserted += 1;
-				await this.db.run(
-					`INSERT INTO tool_calls (
+				// Ignored rather than refused: a concurrent pass over the same
+				// logs may have landed it since the probe, which is not an error.
+				const { changes } = await this.db.run(
+					`INSERT OR IGNORE INTO tool_calls (
 						digest, session_id, entry_id, call_id, timestamp, name,
 						args_digest, path, result_chars, result_digest, is_error,
 						verifier_kind
@@ -328,6 +332,7 @@ class SqliteTurnStore implements TurnStore {
 						c.verifierKind,
 					],
 				);
+				inserted += changes;
 			}
 			await this.db.exec("COMMIT");
 			return { inserted, duplicates: calls.length - inserted };
@@ -476,13 +481,13 @@ class SqliteTurnStore implements TurnStore {
 			let inserted = 0;
 			for (const d of fresh.values()) {
 				if (known.has(d.callDigest)) continue;
-				inserted += 1;
-				await this.db.run(
-					`INSERT INTO dropped_calls (
+				const { changes } = await this.db.run(
+					`INSERT OR IGNORE INTO dropped_calls (
 						digest, session_id, dropped_at_entry_id, dropped_at_timestamp
 					) VALUES (?, ?, ?, ?)`,
 					[d.callDigest, d.sessionId, d.droppedAtEntryId, d.droppedAtTimestamp],
 				);
+				inserted += changes;
 			}
 			await this.db.exec("COMMIT");
 			return { inserted, duplicates: dropped.length - inserted };
