@@ -11,7 +11,7 @@ interface Sqlite3Database {
 	run(
 		sql: string,
 		params: readonly unknown[],
-		cb: (err: Error | null) => void,
+		cb: (this: { changes: number }, err: Error | null) => void,
 	): void;
 	all(
 		sql: string,
@@ -22,9 +22,15 @@ interface Sqlite3Database {
 	close(cb: (err: Error | null) => void): void;
 }
 
+/** What a statement did to the table it ran against. */
+export interface RunResult {
+	/** Rows the statement inserted, updated or deleted. */
+	readonly changes: number;
+}
+
 /** A promise-speaking handle to a SQLite database. */
 export interface Db {
-	run(sql: string, params?: readonly unknown[]): Promise<void>;
+	run(sql: string, params?: readonly unknown[]): Promise<RunResult>;
 	all<T>(sql: string, params?: readonly unknown[]): Promise<T[]>;
 	exec(sql: string): Promise<void>;
 	close(): Promise<void>;
@@ -37,7 +43,10 @@ export async function openDb(dbPath: string): Promise<Db> {
 	return {
 		run: (sql, params = []) =>
 			new Promise((resolve, reject) => {
-				database.run(sql, params, (err) => (err ? reject(err) : resolve()));
+				database.run(sql, params, function (err) {
+					if (err) reject(err);
+					else resolve({ changes: this.changes });
+				});
 			}),
 		all: <T>(sql: string, params: readonly unknown[] = []) =>
 			new Promise<T[]>((resolve, reject) => {
