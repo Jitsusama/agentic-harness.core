@@ -1,7 +1,12 @@
 import type { RunCost, RunTokens } from "../types.js";
 
-/** What a turn was billed for. */
-export type TurnKind = "assistant" | "compaction";
+/**
+ * What a turn was billed for: a turn of the agent, the summary of a
+ * compaction, or a side call, which is one an extension made to a model
+ * off the agent's loop and recorded on an entry of its own, such as
+ * classifying the conversation's paragraphs.
+ */
+export type TurnKind = "assistant" | "compaction" | "side";
 
 /**
  * One billable turn read out of a session log.
