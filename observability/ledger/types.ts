@@ -41,6 +41,95 @@ export interface TurnRecord {
 	 * roughly ten percent of entries that forking copies verbatim.
 	 */
 	readonly digest: string;
+	/**
+	 * What the log says about the turn beyond its bill: what came before
+	 * it, how long after, and the run it belongs to. Absent when the
+	 * harness reading the log does not derive these, which the ledger
+	 * keeps as unknown rather than zero.
+	 */
+	readonly facts?: TurnFacts;
+	/** Compaction only: how the summary was written and what surrounded it. */
+	readonly compaction?: CompactionFacts;
+}
+
+/**
+ * What stood between a turn and the billed turn before it on its branch,
+ * reduced to the one that best explains a cache miss. When several
+ * apply, the first in this order wins: a compaction, a model change, a
+ * change to the tool set, a change to the system prompt, a typed
+ * message, a message the harness sent to resume a run, tool results,
+ * and nothing at all.
+ */
+export type TurnPrecedent =
+	| "compaction"
+	| "model"
+	| "tools"
+	| "system"
+	| "typed"
+	| "resume"
+	| "results"
+	| "nothing";
+
+/**
+ * Facts about one turn that the log holds but its usage does not. Every
+ * field is null when the log could not say, never a guess.
+ */
+export interface TurnFacts {
+	/** Null for the first billed turn on its branch. */
+	readonly precededBy: TurnPrecedent | null;
+	/** Milliseconds since the billed turn before it on its branch. */
+	readonly gapMs: number | null;
+	/**
+	 * Tokens new to the prompt since that turn, estimated from what was
+	 * added to the conversation in between and the previous turn's own
+	 * output. A cache write well beyond this is a miss.
+	 */
+	readonly newTokens: number | null;
+	/** Why the model stopped, as the provider said. */
+	readonly stopReason: string | null;
+	/** Characters of thinking the turn produced. */
+	readonly thinkingChars: number | null;
+	/** Characters of visible text the turn produced. */
+	readonly textChars: number | null;
+	/**
+	 * The run the turn belongs to: everything from one typed message to
+	 * the next, named by the entry of the message that started it.
+	 */
+	readonly runId: string | null;
+	/**
+	 * An assistant turn's position in its run, from one. A compaction's is
+	 * how many turns the run had made before it.
+	 */
+	readonly runTurn: number | null;
+}
+
+/** How a compaction's summary was written and what surrounded it. */
+export interface CompactionFacts {
+	/** Written ahead of the trigger or on the spot, as the harness said. */
+	readonly written: string | null;
+	/** Which summariser wrote it. */
+	readonly summariser: string | null;
+	/** How long the summary took to write. */
+	readonly summaryMs: number | null;
+	/** How long the session waited on it. */
+	readonly waitedMs: number | null;
+	/** Characters in the summary. */
+	readonly summaryChars: number | null;
+	/** Whether a request in flight was stopped to compact. */
+	readonly abortedRequest: boolean | null;
+	/**
+	 * Whether the harness resumed the run afterwards. Null until the log
+	 * shows the next message, since an unfinished log cannot say.
+	 */
+	readonly resumed: boolean | null;
+	/** Milliseconds since the last typed message. */
+	readonly sinceTypedMs: number | null;
+}
+
+/** The rows a read-only ledger query returned, in column order. */
+export interface QueryAnswer {
+	readonly columns: readonly string[];
+	readonly rows: readonly Record<string, unknown>[];
 }
 
 /**

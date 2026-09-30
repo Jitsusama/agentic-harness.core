@@ -36,10 +36,37 @@ export interface Db {
 	close(): Promise<void>;
 }
 
+/** How a database is opened. */
+export interface OpenOptions {
+	/**
+	 * Open without write access, and without creating the file. Every
+	 * statement that would change it fails in the driver.
+	 */
+	readonly readOnly?: boolean;
+}
+
 /** Open a SQLite database at the given path (`:memory:` for tests). */
-export async function openDb(dbPath: string): Promise<Db> {
+export async function openDb(
+	dbPath: string,
+	options: OpenOptions = {},
+): Promise<Db> {
 	const sqlite3 = await import("sqlite3");
-	const database: Sqlite3Database = new sqlite3.default.Database(dbPath);
+	const database: Sqlite3Database = await new Promise((resolve, reject) => {
+		// The driver's own default is read-write, create and full mutex;
+		// read-only swaps the first two and keeps the third.
+		const access = options.readOnly
+			? sqlite3.default.OPEN_READONLY
+			: sqlite3.default.OPEN_READWRITE | sqlite3.default.OPEN_CREATE;
+		const mode = access | sqlite3.default.OPEN_FULLMUTEX;
+		// The driver reports a failed open through this callback and
+		// nowhere else, so a missing read-only file would otherwise
+		// surface as a confusing error on the first statement.
+		const opened: Sqlite3Database = new sqlite3.default.Database(
+			dbPath,
+			mode,
+			(err) => (err ? reject(err) : resolve(opened)),
+		);
+	});
 	return {
 		run: (sql, params = []) =>
 			new Promise((resolve, reject) => {

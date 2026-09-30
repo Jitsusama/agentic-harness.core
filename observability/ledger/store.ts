@@ -3,6 +3,7 @@ import type {
 	CallScope,
 	DroppedCallRecord,
 	PaybackReplay,
+	QueryAnswer,
 	RegretReport,
 	RepeatedCall,
 	SessionRecord,
@@ -99,6 +100,7 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 CREATE INDEX IF NOT EXISTS turns_timestamp ON turns (timestamp);
 CREATE INDEX IF NOT EXISTS turns_session ON turns (session_id);
+CREATE INDEX IF NOT EXISTS turns_session_time ON turns (session_id, timestamp);
 CREATE TABLE IF NOT EXISTS sightings (
 	digest TEXT NOT NULL,
 	session_id TEXT NOT NULL,
@@ -139,6 +141,256 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 `;
 
+/**
+ * Columns added to `turns` after its first shape, each with the record
+ * field it holds. Declared once, because the migration that adds them,
+ * the insert that writes them and the fill that back-dates them onto a
+ * held turn must agree, and three lists drift.
+ */
+const FACT_COLUMNS: ReadonlyArray<{
+	readonly column: string;
+	readonly type: "TEXT" | "INTEGER";
+	readonly value: (turn: TurnRecord) => unknown;
+}> = [
+	{ column: "thinking_level", type: "TEXT", value: (t) => t.thinkingLevel },
+	{
+		column: "preceded_by",
+		type: "TEXT",
+		value: (t) => t.facts?.precededBy ?? null,
+	},
+	{ column: "gap_ms", type: "INTEGER", value: (t) => t.facts?.gapMs ?? null },
+	{
+		column: "new_tokens",
+		type: "INTEGER",
+		value: (t) => t.facts?.newTokens ?? null,
+	},
+	{
+		column: "stop_reason",
+		type: "TEXT",
+		value: (t) => t.facts?.stopReason ?? null,
+	},
+	{
+		column: "thinking_chars",
+		type: "INTEGER",
+		value: (t) => t.facts?.thinkingChars ?? null,
+	},
+	{
+		column: "text_chars",
+		type: "INTEGER",
+		value: (t) => t.facts?.textChars ?? null,
+	},
+	{ column: "run_id", type: "TEXT", value: (t) => t.facts?.runId ?? null },
+	{
+		column: "run_turn",
+		type: "INTEGER",
+		value: (t) => t.facts?.runTurn ?? null,
+	},
+	{
+		column: "written",
+		type: "TEXT",
+		value: (t) => t.compaction?.written ?? null,
+	},
+	{
+		column: "summariser",
+		type: "TEXT",
+		value: (t) => t.compaction?.summariser ?? null,
+	},
+	{
+		column: "summary_ms",
+		type: "INTEGER",
+		value: (t) => t.compaction?.summaryMs ?? null,
+	},
+	{
+		column: "waited_ms",
+		type: "INTEGER",
+		value: (t) => t.compaction?.waitedMs ?? null,
+	},
+	{
+		column: "summary_chars",
+		type: "INTEGER",
+		value: (t) => t.compaction?.summaryChars ?? null,
+	},
+	{
+		column: "aborted_request",
+		type: "INTEGER",
+		value: (t) => flag(t.compaction?.abortedRequest),
+	},
+	{
+		column: "resumed",
+		type: "INTEGER",
+		value: (t) => flag(t.compaction?.resumed),
+	},
+	{
+		column: "since_typed_ms",
+		type: "INTEGER",
+		value: (t) => t.compaction?.sinceTypedMs ?? null,
+	},
+];
+
+/** SQLite has no boolean; unknown stays null rather than reading as false. */
+function flag(value: boolean | null | undefined): number | null {
+	if (value === null || value === undefined) return null;
+	return value ? 1 : 0;
+}
+
+/**
+ * A cache write this many tokens past the estimate of what was new is
+ * prompt framing and rounding, not a miss.
+ */
+const MISS_SLACK_TOKENS = 2000;
+
+/** A write this far past the estimate, after the slack, is a miss. */
+const MISS_THRESHOLD_TOKENS = 5000;
+
+/** Idle past this and a one-hour cache has expired. */
+const HOUR_MS = 3_600_000;
+
+/** Idle past this and a five-minute cache has expired. */
+const FIVE_MINUTES_MS = 300_000;
+
+/** A turn that read less than this from the cache read nothing useful. */
+const FULL_MISS_READ_TOKENS = 1000;
+
+/**
+ * The views a query is written against, dropped and made again on every
+ * open, so a ledger always answers with this version's definitions
+ * rather than whichever version first created it. Each is defined here
+ * once, so a named report and an ad hoc query cannot disagree.
+ */
+const VIEWS = `
+DROP VIEW IF EXISTS compaction_moments;
+DROP VIEW IF EXISTS runs;
+DROP VIEW IF EXISTS cycles;
+DROP VIEW IF EXISTS misses;
+DROP VIEW IF EXISTS turn_facts;
+
+CREATE VIEW turn_facts AS
+SELECT t.digest, t.entry_id, t.session_id, t.timestamp,
+	substr(t.timestamp, 1, 10) AS day,
+	t.kind, t.model, t.thinking_level,
+	t.tokens_input + t.tokens_cache_read + t.tokens_cache_write AS context,
+	t.tokens_input, t.tokens_output, t.tokens_cache_read,
+	t.tokens_cache_write, t.cache_write_1h,
+	t.cost_total AS cost, t.cost_input, t.cost_output,
+	t.cost_cache_read, t.cost_cache_write,
+	t.preceded_by, t.gap_ms, t.new_tokens, t.stop_reason,
+	t.thinking_chars, t.text_chars, t.run_id, t.run_turn,
+	t.dropped_before, t.first_kept_entry_id,
+	s.repo, s.quest, s.cwd
+FROM turns AS t
+LEFT JOIN sessions AS s ON s.session_id = t.session_id;
+
+CREATE VIEW misses AS
+SELECT f.*,
+	f.tokens_cache_write - f.new_tokens - ${MISS_SLACK_TOKENS} AS excess_tokens,
+	(f.tokens_cache_write - f.new_tokens - ${MISS_SLACK_TOKENS})
+		* f.cost_cache_write / f.tokens_cache_write AS excess_cost,
+	CASE
+		WHEN f.preceded_by = 'compaction' THEN 'after compaction'
+		WHEN f.preceded_by = 'model' THEN 'model change'
+		WHEN f.gap_ms > ${HOUR_MS} THEN 'idle over an hour'
+		WHEN f.gap_ms > ${FIVE_MINUTES_MS} AND f.cache_write_1h = 0
+			THEN 'idle over five minutes'
+		WHEN f.preceded_by IN ('tools', 'system') THEN 'prompt changed'
+		WHEN f.preceded_by = 'typed' THEN 'after a typed message'
+		WHEN f.tokens_cache_read < ${FULL_MISS_READ_TOKENS}
+			THEN 'full miss, unexplained'
+		ELSE 'partial miss, unexplained'
+	END AS cause
+FROM turn_facts AS f
+WHERE f.kind = 'assistant'
+	AND f.gap_ms IS NOT NULL
+	AND f.new_tokens IS NOT NULL
+	AND f.tokens_cache_write > 0
+	AND f.tokens_cache_write - f.new_tokens - ${MISS_SLACK_TOKENS}
+		> ${MISS_THRESHOLD_TOKENS};
+
+CREATE VIEW cycles AS
+WITH numbered AS (
+	SELECT f.*,
+		SUM(CASE WHEN f.kind = 'compaction' THEN 1 ELSE 0 END) OVER (
+			PARTITION BY f.session_id ORDER BY f.timestamp, f.digest
+			ROWS UNBOUNDED PRECEDING
+		) AS cycle
+	FROM turn_facts AS f
+),
+worked AS (
+	SELECT n.*,
+		ROW_NUMBER() OVER (
+			PARTITION BY n.session_id, n.cycle ORDER BY n.timestamp, n.digest
+		) AS first_rank,
+		ROW_NUMBER() OVER (
+			PARTITION BY n.session_id, n.cycle
+			ORDER BY n.timestamp DESC, n.digest DESC
+		) AS last_rank
+	FROM numbered AS n
+	WHERE n.cycle > 0 AND n.kind = 'assistant' AND n.context > 0
+),
+opened AS (
+	SELECT session_id, cycle, digest AS compaction_digest,
+		timestamp AS compacted_at, repo, quest
+	FROM numbered WHERE kind = 'compaction'
+),
+last_cycle AS (
+	SELECT session_id, MAX(cycle) AS cycles FROM numbered GROUP BY session_id
+)
+SELECT o.session_id, o.cycle, o.compaction_digest, o.compacted_at,
+	MAX(w.timestamp) AS ended_at,
+	COUNT(w.digest) AS turns,
+	COALESCE(SUM(w.cost), 0) AS cost,
+	MAX(CASE WHEN w.first_rank = 1 THEN w.context END) AS context_start,
+	MAX(CASE WHEN w.last_rank = 1 THEN w.context END) AS context_end,
+	o.cycle < l.cycles AS closed,
+	o.repo, o.quest
+FROM opened AS o
+JOIN last_cycle AS l ON l.session_id = o.session_id
+LEFT JOIN worked AS w ON w.session_id = o.session_id AND w.cycle = o.cycle
+GROUP BY o.session_id, o.cycle;
+
+CREATE VIEW runs AS
+SELECT run_id, MIN(session_id) AS session_id,
+	MIN(timestamp) AS started_at, MAX(timestamp) AS ended_at,
+	SUM(CASE WHEN kind = 'assistant' THEN 1 ELSE 0 END) AS turns,
+	SUM(CASE WHEN kind = 'compaction' THEN 1 ELSE 0 END) AS compactions,
+	COALESCE(SUM(cost), 0) AS cost,
+	MAX(repo) AS repo, MAX(quest) AS quest
+FROM turn_facts
+WHERE run_id IS NOT NULL
+GROUP BY run_id;
+
+CREATE VIEW compaction_moments AS
+WITH next_turn AS (
+	SELECT c.digest, MIN(n.timestamp) AS next_at
+	FROM turns AS c
+	JOIN turns AS n
+		ON n.session_id = c.session_id
+		AND n.kind = 'assistant'
+		AND n.timestamp > c.timestamp
+	WHERE c.kind = 'compaction'
+	GROUP BY c.digest
+)
+SELECT f.digest, f.session_id, f.timestamp, f.day, f.model,
+	f.cost, f.dropped_before, f.gap_ms, f.run_id,
+	f.run_turn AS turns_into_run,
+	t.written, t.summariser, t.summary_ms, t.waited_ms, t.summary_chars,
+	t.aborted_request, t.resumed, t.since_typed_ms,
+	nx.next_at,
+	CAST(ROUND((julianday(nx.next_at) - julianday(f.timestamp)) * 86400000)
+		AS INTEGER) AS resume_ms,
+	f.repo, f.quest
+FROM turn_facts AS f
+JOIN turns AS t ON t.digest = f.digest
+LEFT JOIN next_turn AS nx ON nx.digest = f.digest
+WHERE f.kind = 'compaction';
+`;
+
+/**
+ * The most rows one query may return. A query past it is refused rather
+ * than cut, since a cut answer reads as the whole one; aggregating or a
+ * LIMIT is how to ask for less.
+ */
+export const LEDGER_QUERY_ROW_CAP = 5000;
+
 /** Bound variables per probe, well inside SQLite's default ceiling. */
 const PROBE_CHUNK = 500;
 
@@ -166,7 +418,74 @@ export async function openTurnStore(dbPath: string): Promise<TurnStore> {
 	await db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
 	await db.exec(SCHEMA);
 	await migrate(db);
+	await db.exec(VIEWS);
 	return new SqliteTurnStore(db);
+}
+
+/** A read-only view of a ledger, for questions nobody wrote a report for. */
+export interface LedgerReader {
+	/**
+	 * Run one `SELECT` (or `WITH ... SELECT`) against the ledger's tables
+	 * and views. Anything else is refused before it reaches the database,
+	 * and the connection is read-only besides, so no query can change what
+	 * the ledger holds. A query returning more than
+	 * {@link LEDGER_QUERY_ROW_CAP} rows is refused rather than cut.
+	 */
+	query(sql: string): Promise<QueryAnswer>;
+	close(): Promise<void>;
+}
+
+/**
+ * Open a ledger for reading only. The file must exist and have been
+ * opened by {@link openTurnStore} at this version, which is what creates
+ * the views a query is written against.
+ */
+export async function openLedgerReader(dbPath: string): Promise<LedgerReader> {
+	const db = await openDb(dbPath, { readOnly: true });
+	await db.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;");
+	return {
+		query: async (sql) => {
+			const statement = singleSelect(sql);
+			// On lines of their own, so a trailing comment in the query cannot
+			// swallow the bound.
+			const rows = await db.all<Record<string, unknown>>(
+				`SELECT * FROM (\n${statement}\n) LIMIT ${LEDGER_QUERY_ROW_CAP + 1}`,
+			);
+			if (rows.length > LEDGER_QUERY_ROW_CAP) {
+				throw new Error(
+					`The query returned more than ${LEDGER_QUERY_ROW_CAP} rows. ` +
+						"Aggregate it, or add a LIMIT.",
+				);
+			}
+			return { columns: Object.keys(rows[0] ?? {}), rows };
+		},
+		close: () => db.close(),
+	};
+}
+
+/**
+ * The statement, if it is one `SELECT` or `WITH`, with a trailing
+ * semicolon taken off. A semicolon anywhere else outside a quoted string
+ * means a second statement, which is refused rather than guessed about.
+ */
+function singleSelect(sql: string): string {
+	const body = sql.trim().replace(/;\s*$/, "");
+	if (!/^(select|with)\b/i.test(body)) {
+		throw new Error(
+			"A ledger query is one SELECT, or WITH ... SELECT. Nothing else runs.",
+		);
+	}
+	let quote: string | null = null;
+	for (const character of body) {
+		if (quote) {
+			if (character === quote) quote = null;
+		} else if (character === "'" || character === '"') {
+			quote = character;
+		} else if (character === ";") {
+			throw new Error("A ledger query is one statement.");
+		}
+	}
+	return body;
 }
 
 /**
@@ -182,10 +501,29 @@ async function migrate(db: Db): Promise<void> {
 			(column) => column.name,
 		),
 	);
-	if (!columns.has("thinking_level")) {
-		await db.exec("ALTER TABLE turns ADD COLUMN thinking_level TEXT");
+	for (const { column, type } of FACT_COLUMNS) {
+		if (!columns.has(column)) {
+			await db.exec(`ALTER TABLE turns ADD COLUMN ${column} ${type}`);
+		}
 	}
 }
+
+const INSERT_TURN = `INSERT OR IGNORE INTO turns (
+	digest, entry_id, session_id, timestamp, kind, model,
+	tokens_input, tokens_output, tokens_cache_read,
+	tokens_cache_write, tokens_total, cache_write_1h,
+	cost_input, cost_output, cost_cache_read, cost_cache_write,
+	cost_total, dropped_before, first_kept_entry_id,
+	${FACT_COLUMNS.map((f) => f.column).join(", ")}
+) VALUES (${Array.from({ length: 19 + FACT_COLUMNS.length }, () => "?").join(", ")})`;
+
+/**
+ * Give a held turn every fact a later scan learned that it lacks. A fact
+ * already known is left alone, since the same entry cannot have two.
+ */
+const FILL_FACTS = `UPDATE turns SET ${FACT_COLUMNS.map(
+	(f) => `${f.column} = COALESCE(${f.column}, ?)`,
+).join(", ")} WHERE digest = ?`;
 
 class SqliteTurnStore implements TurnStore {
 	constructor(private readonly db: Db) {}
@@ -223,46 +561,37 @@ class SqliteTurnStore implements TurnStore {
 				// Seen before, so not billed again, but the sighting is still
 				// recorded: deduplicating must not hide that it happened.
 				await this.sight(t);
-				await this.fillThinkingLevel(t);
+				await this.fillFacts(t);
 				continue;
 			}
 			// Another session indexing the same logs may have landed this row
 			// since the table was asked, so what counts is whether this
 			// statement wrote it, not whether the probe had seen it.
-			const { changes } = await this.db.run(
-				`INSERT OR IGNORE INTO turns (
-					digest, entry_id, session_id, timestamp, kind, model,
-					tokens_input, tokens_output, tokens_cache_read,
-					tokens_cache_write, tokens_total, cache_write_1h,
-					cost_input, cost_output, cost_cache_read, cost_cache_write,
-					cost_total, dropped_before, first_kept_entry_id, thinking_level
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					t.digest,
-					t.entryId,
-					t.sessionId,
-					t.timestamp,
-					t.kind,
-					t.model,
-					t.tokens.input,
-					t.tokens.output,
-					t.tokens.cacheRead,
-					t.tokens.cacheWrite,
-					t.tokens.total,
-					t.cacheWrite1h,
-					t.cost?.input ?? null,
-					t.cost?.output ?? null,
-					t.cost?.cacheRead ?? null,
-					t.cost?.cacheWrite ?? null,
-					t.cost?.total ?? null,
-					t.droppedBefore,
-					t.firstKeptEntryId,
-					t.thinkingLevel,
-				],
-			);
+			const { changes } = await this.db.run(INSERT_TURN, [
+				t.digest,
+				t.entryId,
+				t.sessionId,
+				t.timestamp,
+				t.kind,
+				t.model,
+				t.tokens.input,
+				t.tokens.output,
+				t.tokens.cacheRead,
+				t.tokens.cacheWrite,
+				t.tokens.total,
+				t.cacheWrite1h,
+				t.cost?.input ?? null,
+				t.cost?.output ?? null,
+				t.cost?.cacheRead ?? null,
+				t.cost?.cacheWrite ?? null,
+				t.cost?.total ?? null,
+				t.droppedBefore,
+				t.firstKeptEntryId,
+				...FACT_COLUMNS.map((f) => f.value(t)),
+			]);
 			inserted += changes;
 			await this.sight(t);
-			if (changes === 0) await this.fillThinkingLevel(t);
+			if (changes === 0) await this.fillFacts(t);
 		}
 		return inserted;
 	}
@@ -737,17 +1066,15 @@ class SqliteTurnStore implements TurnStore {
 	}
 
 	/**
-	 * Give a held turn the thinking level a later scan learned, when it
-	 * had none. This is how a ledger indexed before the column existed
-	 * gets it on the next rescan, without billing anything twice. A level
-	 * already known is left alone: the same entry cannot have run at two.
+	 * Give a held turn the facts a later scan learned. This is how a ledger
+	 * indexed before a column existed gets it on the next rescan, and how a
+	 * compaction indexed before its log said whether the run resumed gets
+	 * told, without billing anything twice.
 	 */
-	private async fillThinkingLevel(t: TurnRecord): Promise<void> {
-		if (t.thinkingLevel === null) return;
-		await this.db.run(
-			"UPDATE turns SET thinking_level = ? WHERE digest = ? AND thinking_level IS NULL",
-			[t.thinkingLevel, t.digest],
-		);
+	private async fillFacts(t: TurnRecord): Promise<void> {
+		const values = FACT_COLUMNS.map((f) => f.value(t));
+		if (values.every((value) => value === null)) return;
+		await this.db.run(FILL_FACTS, [...values, t.digest]);
 	}
 
 	private async sight(t: TurnRecord): Promise<void> {
