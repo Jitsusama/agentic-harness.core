@@ -228,6 +228,34 @@ describe("ledger views", () => {
 		await Promise.all([reader.close(), store.close()]);
 	});
 
+	it("counts a side call in its cycle's side cost and not as a turn", async () => {
+		const at = (minute: number) =>
+			`2026-09-24T10:${String(minute).padStart(2, "0")}:00.000Z`;
+		const side = (minute: number, total: number) =>
+			turn({
+				kind: "side",
+				timestamp: at(minute),
+				cost: { input: total, output: 0, cacheRead: 0, cacheWrite: 0, total },
+				facts: undefined,
+			});
+		const { store, reader } = await ledger([
+			side(0, 0.5),
+			compaction({ timestamp: at(1) }),
+			turn({ timestamp: at(2) }),
+			side(3, 0.01),
+			side(4, 0.02),
+		]);
+
+		const answer = await reader.query(
+			"SELECT cycle, turns, cost, side_cost FROM cycles ORDER BY cycle",
+		);
+
+		expect(answer.rows).toEqual([
+			{ cycle: 1, turns: 1, cost: 0.0435, side_cost: 0.03 },
+		]);
+		await Promise.all([reader.close(), store.close()]);
+	});
+
 	it("sums a run once however many sessions forked it", async () => {
 		const { store, reader } = await ledger([
 			turn({ facts: { ...FACTS, runId: "r1", runTurn: 1 } }),

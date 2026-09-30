@@ -333,11 +333,17 @@ opened AS (
 ),
 last_cycle AS (
 	SELECT session_id, MAX(cycle) AS cycles FROM numbered GROUP BY session_id
+),
+sided AS (
+	SELECT session_id, cycle, SUM(cost) AS side_cost
+	FROM numbered WHERE cycle > 0 AND kind = 'side'
+	GROUP BY session_id, cycle
 )
 SELECT o.session_id, o.cycle, o.compaction_digest, o.compacted_at,
 	MAX(w.timestamp) AS ended_at,
 	COUNT(w.digest) AS turns,
 	COALESCE(SUM(w.cost), 0) AS cost,
+	COALESCE(MAX(sd.side_cost), 0) AS side_cost,
 	MAX(CASE WHEN w.first_rank = 1 THEN w.context END) AS context_start,
 	MAX(CASE WHEN w.last_rank = 1 THEN w.context END) AS context_end,
 	o.cycle < l.cycles AS closed,
@@ -345,6 +351,7 @@ SELECT o.session_id, o.cycle, o.compaction_digest, o.compacted_at,
 FROM opened AS o
 JOIN last_cycle AS l ON l.session_id = o.session_id
 LEFT JOIN worked AS w ON w.session_id = o.session_id AND w.cycle = o.cycle
+LEFT JOIN sided AS sd ON sd.session_id = o.session_id AND sd.cycle = o.cycle
 GROUP BY o.session_id, o.cycle;
 
 CREATE VIEW runs AS
