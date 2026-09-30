@@ -7,6 +7,10 @@
  * both want the same order: an explicit target first, then a name
  * match, then a GLM-shaped model (the intended cheap watcher),
  * then the caller's current model as a last resort.
+ *
+ * A registry can list a model its provider no longer serves, so
+ * the order is a ranked list rather than a single pick: a caller
+ * tries each in turn and moves past one that cannot be reached.
  */
 
 /** The minimum a model reference needs for selection. */
@@ -28,10 +32,47 @@ export function looksLikeGlm(model: ModelRef): boolean {
 }
 
 /**
- * Choose a model for a side completion, in preference order:
- * an explicit provider+model resolved through `find`, then a
- * name match in `available`, then a GLM-shaped model, then the
- * caller's `current` model. Returns undefined when nothing fits.
+ * Rank the models a side completion may run against, best first:
+ * an explicit provider+model resolved through `find`, then a name
+ * match in `available`, then a provider match, then every
+ * GLM-shaped model in registry order, then the caller's `current`
+ * model. Each model appears once. Empty when nothing fits.
+ */
+export function rankModels(
+	available: ModelRef[],
+	current: ModelRef | undefined,
+	target: ModelTarget,
+	find?: (provider: string, model: string) => ModelRef | undefined,
+): ModelRef[] {
+	const ranked: ModelRef[] = [];
+	const add = (model: ModelRef | undefined) => {
+		if (!model) return;
+		const seen = ranked.some(
+			(m) => m.provider === model.provider && m.id === model.id,
+		);
+		if (!seen) ranked.push(model);
+	};
+
+	if (target.provider && target.model) {
+		add(find?.(target.provider, target.model));
+	}
+	if (target.model) {
+		add(available.find((m) => m.id === target.model));
+	}
+	// A provider named without a model still narrows the choice, per
+	// the "provider and/or model" contract: honour it before the
+	// GLM guess so an explicit request is not silently dropped.
+	if (target.provider) {
+		add(available.find((m) => m.provider === target.provider));
+	}
+	for (const model of available.filter(looksLikeGlm)) add(model);
+	add(current);
+	return ranked;
+}
+
+/**
+ * Choose the model a side completion runs against first: the head
+ * of `rankModels`. Returns undefined when nothing fits.
  */
 export function pickModel(
 	available: ModelRef[],
@@ -39,20 +80,18 @@ export function pickModel(
 	target: ModelTarget,
 	find?: (provider: string, model: string) => ModelRef | undefined,
 ): ModelRef | undefined {
-	if (target.provider && target.model) {
-		const found = find?.(target.provider, target.model);
-		if (found) return found;
-	}
-	if (target.model) {
-		const byId = available.find((m) => m.id === target.model);
-		if (byId) return byId;
-	}
-	// A provider named without a model still narrows the choice, per
-	// the "provider and/or model" contract: honour it before the
-	// GLM guess so an explicit request is not silently dropped.
-	if (target.provider) {
-		const byProvider = available.find((m) => m.provider === target.provider);
-		if (byProvider) return byProvider;
-	}
-	return available.find(looksLikeGlm) ?? current;
+	return rankModels(available, current, target, find)[0];
+}
+
+/**
+ * True when an error says the model cannot be reached at all, as
+ * opposed to failing this one request: not found or not deployed,
+ * or the credentials refused. Only then is the next ranked model
+ * worth trying; a rate limit or a bad prompt would fail the same way
+ * or should reach the caller unchanged.
+ */
+export function isModelUnreachable(error: string): boolean {
+	return /\b40[134]\b|not found|not deployed|does not exist|model_not_found|inaccessible|unauthori[sz]ed|forbidden/i.test(
+		error,
+	);
 }

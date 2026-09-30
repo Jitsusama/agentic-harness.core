@@ -15,7 +15,7 @@
  * a different host supplies its own equivalent.
  */
 
-import { type ModelRef, pickModel } from "./resolve.js";
+import { isModelUnreachable, type ModelRef, rankModels } from "./resolve.js";
 import type {
 	CompleteSimple,
 	CompletionMessage,
@@ -61,46 +61,28 @@ function textOf(content: Array<{ type: string; text?: string }>): string {
 /**
  * Resolve a model and its auth from `registry`, run one
  * completion through `complete` and return the text and usage.
- * Every failure path (no model, no auth, a throwing call) returns
- * `ok: false` with a message rather than throwing, so a caller on a
- * hot path can degrade quietly.
+ *
+ * Models are tried in `rankModels` order. A model that cannot be
+ * reached (no auth, or an error saying it is not there) gives way
+ * to the next; any other outcome, success or failure, is the
+ * answer. When every model gives way, the error names each one with
+ * its reason. Every failure path returns `ok: false` with a message
+ * rather than throwing, so a caller on a hot path can degrade
+ * quietly.
  */
 export async function runSideCompletion(
 	registry: CompletionRegistry,
 	request: SideCompletionRequest,
 	complete: CompleteSimple,
 ): Promise<SideCompletionResult> {
-	const available = registry.getAvailable();
-	const model = pickModel(
-		available,
+	const candidates = rankModels(
+		registry.getAvailable(),
 		request.current,
 		{ provider: request.provider, model: request.model },
 		(p, m) => registry.find(p, m),
 	);
-	if (!model) {
+	if (candidates.length === 0) {
 		return { ok: false, text: "", error: "no model available" };
-	}
-
-	let auth: Awaited<ReturnType<CompletionRegistry["getApiKeyAndHeaders"]>>;
-	try {
-		auth = await registry.getApiKeyAndHeaders(model);
-	} catch (err) {
-		return {
-			ok: false,
-			text: "",
-			provider: model.provider,
-			model: model.id,
-			error: `auth resolution threw: ${err instanceof Error ? err.message : String(err)}`,
-		};
-	}
-	if (!auth.ok) {
-		return {
-			ok: false,
-			text: "",
-			provider: model.provider,
-			model: model.id,
-			error: `auth not configured: ${auth.error}`,
-		};
 	}
 
 	const messages: CompletionMessage[] = request.messages ?? [
@@ -110,6 +92,60 @@ export async function runSideCompletion(
 			timestamp: Date.now(),
 		},
 	];
+
+	const reasons: string[] = [];
+	let last: SideCompletionResult = { ok: false, text: "" };
+	for (const model of candidates) {
+		// A cancelled caller wants no more models tried on its behalf.
+		if (reasons.length > 0 && request.signal?.aborted) break;
+		const attempt = await attemptOn(
+			model,
+			registry,
+			request,
+			messages,
+			complete,
+		);
+		if (!attempt.unreachable) return attempt.result;
+		last = attempt.result;
+		reasons.push(`${model.provider}/${model.id}: ${attempt.result.error}`);
+	}
+	return { ...last, error: reasons.join("; ") };
+}
+
+/** One model's outcome, and whether it says to try the next. */
+interface Attempt {
+	readonly result: SideCompletionResult;
+	readonly unreachable: boolean;
+}
+
+/** Resolve `model`'s auth and run the completion against it. */
+async function attemptOn(
+	model: ModelRef,
+	registry: CompletionRegistry,
+	request: SideCompletionRequest,
+	messages: CompletionMessage[],
+	complete: CompleteSimple,
+): Promise<Attempt> {
+	const failure = (error: string, unreachable: boolean): Attempt => ({
+		result: {
+			ok: false,
+			text: "",
+			provider: model.provider,
+			model: model.id,
+			error,
+		},
+		unreachable,
+	});
+
+	let auth: Awaited<ReturnType<CompletionRegistry["getApiKeyAndHeaders"]>>;
+	try {
+		auth = await registry.getApiKeyAndHeaders(model);
+	} catch (err) {
+		return failure(`auth resolution threw: ${messageOf(err)}`, true);
+	}
+	if (!auth.ok) {
+		return failure(`auth not configured: ${auth.error}`, true);
+	}
 
 	try {
 		const result = await complete(
@@ -122,22 +158,26 @@ export async function runSideCompletion(
 				signal: request.signal,
 			},
 		);
+		const failed = result.stopReason === "error";
 		return {
-			ok: result.stopReason !== "error",
-			text: textOf(result.content),
-			provider: model.provider,
-			model: model.id,
-			usage: result.usage,
-			stopReason: result.stopReason,
-			error: result.errorMessage,
+			result: {
+				ok: !failed,
+				text: textOf(result.content),
+				provider: model.provider,
+				model: model.id,
+				usage: result.usage,
+				stopReason: result.stopReason,
+				error: result.errorMessage,
+			},
+			unreachable: failed && isModelUnreachable(result.errorMessage ?? ""),
 		};
 	} catch (err) {
-		return {
-			ok: false,
-			text: "",
-			provider: model.provider,
-			model: model.id,
-			error: `completion threw: ${err instanceof Error ? err.message : String(err)}`,
-		};
+		const message = messageOf(err);
+		return failure(`completion threw: ${message}`, isModelUnreachable(message));
 	}
+}
+
+/** Human-readable message from an unknown thrown value. */
+function messageOf(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
 }

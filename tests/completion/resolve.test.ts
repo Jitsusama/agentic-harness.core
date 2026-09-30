@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+	isModelUnreachable,
 	looksLikeGlm,
 	type ModelRef,
 	pickModel,
+	rankModels,
 } from "../../completion/resolve.js";
 
 const glm: ModelRef = { id: "glm-5.2", provider: "fireworks" };
@@ -54,5 +56,52 @@ describe("pickModel", () => {
 		expect(
 			pickModel(available, opus, { provider: "x", model: "gpt-5" }, find),
 		).toBe(gpt);
+	});
+});
+
+describe("rankModels", () => {
+	const flash: ModelRef = { id: "glm-5p3-flash", provider: "fireworks" };
+
+	it("ranks every GLM model in registry order, then the current model", () => {
+		expect(rankModels([opus, glm, gpt, flash], opus, {})).toEqual([
+			glm,
+			flash,
+			opus,
+		]);
+	});
+
+	it("puts an explicit target first and lists it once", () => {
+		const find = (p: string, m: string) =>
+			p === "fireworks" && m === "glm-5p3-flash" ? flash : undefined;
+		expect(
+			rankModels(
+				[glm, flash],
+				flash,
+				{ provider: "fireworks", model: "glm-5p3-flash" },
+				find,
+			),
+		).toEqual([flash, glm]);
+	});
+
+	it("is empty when nothing fits and there is no current", () => {
+		expect(rankModels([opus, gpt], undefined, {})).toEqual([]);
+	});
+});
+
+describe("isModelUnreachable", () => {
+	it("reads not-found, not-deployed and refused-credential errors as unreachable", () => {
+		expect(
+			isModelUnreachable(
+				'404 {"error":{"message":"Model not found, inaccessible, and/or not deployed"}}',
+			),
+		).toBe(true);
+		expect(isModelUnreachable("model_not_found")).toBe(true);
+		expect(isModelUnreachable("401 Unauthorized")).toBe(true);
+	});
+
+	it("leaves a failure of the request itself alone", () => {
+		expect(isModelUnreachable("429 rate limited")).toBe(false);
+		expect(isModelUnreachable("context length exceeded")).toBe(false);
+		expect(isModelUnreachable("network down")).toBe(false);
 	});
 });
