@@ -2,12 +2,12 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { openDb } from "../../../internal/sqlite/db.js";
 import {
 	openTurnStore,
 	type SessionRecord,
 	type TurnRecord,
 } from "../../../observability/ledger/index.js";
+import { toOlderShape } from "./older-shape.js";
 
 function turn(overrides: Partial<TurnRecord> = {}): TurnRecord {
 	return {
@@ -111,9 +111,7 @@ describe("thinking level", () => {
 		const store = await openTurnStore(path);
 		await store.recordTurns([turn({ digest: "d1" })]);
 		await store.close();
-		const raw = await openDb(path);
-		await raw.exec("ALTER TABLE turns DROP COLUMN thinking_level");
-		await raw.close();
+		await toOlderShape(path, "ALTER TABLE turns DROP COLUMN thinking_level");
 
 		const reopened = await openTurnStore(path);
 
