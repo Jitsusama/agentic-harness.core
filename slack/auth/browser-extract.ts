@@ -11,8 +11,8 @@
  * with web-search-integration.
  */
 
-import * as fs from "node:fs";
 import type { Browser } from "puppeteer-core";
+import { resolveChromePath } from "../../web/chrome.js";
 
 /**
  * Default Slack URL to navigate to: the dedicated sign-in entry
@@ -41,15 +41,6 @@ const POLL_INTERVAL_MS = 1000;
 /** Default timeout: 5 minutes to allow for SSO, 2FA, workspace selection. */
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** Paths where Chrome might be installed. */
-const CHROME_PATHS = [
-	"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-	"/usr/bin/google-chrome",
-	"/usr/bin/google-chrome-stable",
-	"/usr/bin/chromium",
-	"/usr/bin/chromium-browser",
-];
-
 /** Extracted browser session credentials. */
 export interface BrowserCredentials {
 	token: string;
@@ -65,23 +56,6 @@ export interface ExtractOptions {
 	 * among them; a person needs to see it.
 	 */
 	headless?: boolean;
-}
-
-/** Find the Chrome executable on disk. */
-function findChrome(): string {
-	const envPath = process.env.CHROME_PATH;
-	if (envPath && fs.existsSync(envPath)) return envPath;
-
-	for (const p of CHROME_PATHS) {
-		try {
-			if (fs.existsSync(p)) return p;
-		} catch {
-			// Not at this path, try next.
-		}
-	}
-	throw new Error(
-		"Chrome not found. Install Google Chrome or set CHROME_PATH.",
-	);
 }
 
 /**
@@ -107,7 +81,7 @@ export async function extractFromBrowser(
 ): Promise<BrowserCredentials> {
 	const { signal } = options;
 	if (signal?.aborted) throw stopped(signal);
-	const chromePath = findChrome();
+	const chromePath = resolveChromePath(process.env.CHROME_PATH);
 	// Loaded here rather than at import, since this runs once per
 	// Slack setup and the module is imported on every start.
 	const { default: puppeteer } = await import("puppeteer-core");
