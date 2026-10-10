@@ -22,7 +22,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { resolveChromePath } from "../../web/browser.js";
+import { resolveChromePath } from "../../web/chrome.js";
 import { BrowserSession } from "../../web/session.js";
 
 // Launching a browser, loading pages and shaping the network is

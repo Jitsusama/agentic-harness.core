@@ -16,7 +16,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer } from "ws";
-import { resolveChromePath } from "../../web/browser.js";
+import { resolveChromePath } from "../../web/chrome.js";
 
 /**
  * Whether there is a browser to drive.
