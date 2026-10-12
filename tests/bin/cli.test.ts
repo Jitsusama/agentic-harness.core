@@ -193,6 +193,9 @@ describe("hook pre-bash", () => {
 		expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain(
 			"discards all uncommitted changes",
 		);
+		expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain(
+			"git stash push --include-untracked",
+		);
 	});
 
 	it("asks before a risky git command, naming it as recoverable", async () => {
