@@ -48,6 +48,12 @@ export const TREE_WALL_MS = 10 * 60 * 1000;
  */
 const TIDY_WALL_MS = 10_000;
 
+/**
+ * How long refreshing the default branch before a prune may take. Short
+ * and best effort: offline, the prune judges against what it last saw.
+ */
+const FETCH_WALL_MS = 15_000;
+
 /** How the provider is bounded. */
 export interface GitWorktreeOptions {
 	/** The longest one operation may run. `TREE_WALL_MS` when absent. */
@@ -256,12 +262,88 @@ async function isDirty(op: Operation, treePath: string): Promise<boolean> {
 }
 
 /**
+ * Bring `origin/<branch>` up to date, so a change merged on the host
+ * since the last fetch reads as merged. Only that one ref is fetched, on
+ * a clock of its own; a failure leaves the comparison to the ref as it
+ * was. Being stopped by the caller still throws.
+ */
+async function refreshRemoteBranch(
+	op: Operation,
+	repoRoot: string,
+	branch: string,
+): Promise<void> {
+	const fetch = operation(
+		`fetching origin/${branch}`,
+		FETCH_WALL_MS,
+		op.signal,
+	);
+	try {
+		await tryGit(
+			fetch,
+			repoRoot,
+			"fetch",
+			"--quiet",
+			"--no-tags",
+			"--no-recurse-submodules",
+			"origin",
+			`+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+		);
+	} catch (error) {
+		if (op.stopped()) throw error;
+		// The fetch's own clock ran out; judge against the ref as it was.
+	} finally {
+		fetch.end();
+	}
+}
+
+/**
+ * Whether merging `branch` into `target` would change nothing: its
+ * content is already there. This is what a squash or rebase merge
+ * leaves, where none of the branch's commits reach the target. A
+ * conflict, or main having since reverted the change, reads as not.
+ */
+async function contentAlreadyIn(
+	op: Operation,
+	repoRoot: string,
+	target: string,
+	branch: string,
+): Promise<boolean> {
+	const merged = await tryGit(
+		op,
+		repoRoot,
+		"merge-tree",
+		"--write-tree",
+		target,
+		branch,
+	);
+	const targetTree = await tryGit(
+		op,
+		repoRoot,
+		"rev-parse",
+		`${target}^{tree}`,
+	);
+	const mergedTree = merged?.split("\n")[0]?.trim();
+	return Boolean(mergedTree && targetTree && mergedTree === targetTree);
+}
+
+/** What a prune learned about a branch against the default branch. */
+interface MergeState {
+	unmerged: boolean;
+	comparedAgainst: string | undefined;
+	/** Merged by content alone, so `git branch -d` would refuse it. */
+	byContent?: boolean;
+}
+
+/**
  * Return true when `branch` contains commits that the
  * default branch does not.
  *
  * Tries `origin/<default>` first (the common shared-state
- * comparison), then falls back to the local default
- * branch when no origin remote is wired. If neither
+ * comparison), fetched first so a merge on the host counts,
+ * then falls back to the local default branch when no
+ * origin remote is wired. A branch whose commits are not in
+ * the default branch but whose content is counts as merged,
+ * since that is what a squash merge leaves. If neither
  * comparison succeeds the function returns true and lets
  * the caller surface the lack of a target: silently
  * returning false would let a force-less prune destroy
@@ -271,10 +353,14 @@ async function hasUnmergedCommits(
 	op: Operation,
 	repoRoot: string,
 	branch: string,
-): Promise<{ unmerged: boolean; comparedAgainst: string | undefined }> {
+): Promise<MergeState> {
 	const defaultBranch = await detectDefaultBranch(op, repoRoot);
 	if (defaultBranch === branch) {
 		return { unmerged: false, comparedAgainst: defaultBranch };
+	}
+	const hasOrigin = await tryGit(op, repoRoot, "remote", "get-url", "origin");
+	if (hasOrigin !== undefined) {
+		await refreshRemoteBranch(op, repoRoot, defaultBranch);
 	}
 	const originAhead = await tryGit(
 		op,
@@ -284,9 +370,15 @@ async function hasUnmergedCommits(
 		`origin/${defaultBranch}..${branch}`,
 	);
 	if (originAhead !== undefined) {
+		const target = `origin/${defaultBranch}`;
+		if (Number.parseInt(originAhead, 10) === 0) {
+			return { unmerged: false, comparedAgainst: target };
+		}
+		const byContent = await contentAlreadyIn(op, repoRoot, target, branch);
 		return {
-			unmerged: Number.parseInt(originAhead, 10) > 0,
-			comparedAgainst: `origin/${defaultBranch}`,
+			unmerged: !byContent,
+			comparedAgainst: target,
+			...(byContent ? { byContent } : {}),
 		};
 	}
 	const localAhead = await tryGit(
@@ -452,6 +544,7 @@ async function pruneTree(
 	const repoRoot = dirname(absoluteCommonDir);
 	const branch =
 		(await tryGit(op, treePath, "rev-parse", "--abbrev-ref", "HEAD")) ?? "";
+	let mergedByContent = false;
 	if (!force) {
 		if (await isDirty(op, treePath)) {
 			throw new Error(
@@ -459,11 +552,12 @@ async function pruneTree(
 			);
 		}
 		if (branch) {
-			const { unmerged, comparedAgainst } = await hasUnmergedCommits(
+			const { unmerged, comparedAgainst, byContent } = await hasUnmergedCommits(
 				op,
 				repoRoot,
 				branch,
 			);
+			mergedByContent = byContent === true;
 			if (unmerged) {
 				const target = comparedAgainst
 					? `against ${comparedAgainst}`
@@ -485,8 +579,10 @@ async function pruneTree(
 	if (branch) {
 		// Delete the branch when it's fully merged
 		// or the caller forced. Failures here are
-		// non-fatal: the worktree itself is gone.
-		const deleteFlag = force ? "-D" : "-d";
+		// non-fatal: the worktree itself is gone. A
+		// branch merged by content has commits `-d`
+		// cannot find upstream, so it needs `-D`.
+		const deleteFlag = force || mergedByContent ? "-D" : "-d";
 		await tryGit(op, repoRoot, "branch", deleteFlag, branch);
 	}
 }
