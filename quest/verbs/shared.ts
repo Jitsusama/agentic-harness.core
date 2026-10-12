@@ -19,6 +19,8 @@ export interface QuestToolParams {
 	parent?: string;
 	kind?: string;
 	note?: string;
+	/** The new text of a document section, without its heading. */
+	body?: string;
 	reason?: string;
 	priority?: string;
 	status?: string;
