@@ -22,4 +22,11 @@ describe("suggestAction", () => {
 		expect(list).toContain("status");
 		expect(list).toContain("show");
 	});
+
+	it("includes the verbs that edit a quest document's body", () => {
+		const list: readonly string[] = QUEST_ACTIONS;
+		for (const verb of ["journal", "tick", "untick", "section"]) {
+			expect(list).toContain(verb);
+		}
+	});
 });
