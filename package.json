@@ -1,7 +1,7 @@
 {
 	"name": "@jitsusama/agentic-harness.core",
 	"version": "0.6.19",
-	"description": "Pi-agnostic business logic for agentic-harness: state machines, guardian decisions, quest/TDD domain model.",
+	"description": "Pi-agnostic business logic for agentic-harness: state machines, guardian decisions, the quest domain model.",
 	"license": "MIT",
 	"type": "module",
 	"overrides": {
@@ -16,8 +16,6 @@
 		]
 	},
 	"exports": {
-		"./tdd": "./dist/tdd/index.js",
-		"./tdd/presentation": "./dist/tdd/presentation.js",
 		"./shell": "./dist/shell/index.js",
 		"./command": "./dist/command/index.js",
 		"./git-cli": "./dist/git-cli/index.js",

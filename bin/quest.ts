@@ -1,9 +1,8 @@
 /**
  * The `quest` domain's CLI handler: one process per call, state
- * read from and written back to a small JSON file the caller owns
- * -- the same shape `bin/cli.ts`'s tdd handlers use.
+ * read from and written back to a small JSON file the caller owns.
  *
- * Unlike tdd's loop state, a quest's on-disk questsRoot is shared,
+ * Unlike that loaded state, a quest's on-disk questsRoot is shared,
  * deliberate infrastructure: by default it resolves to the exact
  * XDG path agentic-harness.pi's own quest-workflow extension
  * writes to (`~/.local/share/pi/agentic-harness.pi/quest-workflow/

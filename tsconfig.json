@@ -13,7 +13,6 @@
 		"noEmit": true
 	},
 	"include": [
-		"tdd",
 		"shell",
 		"command",
 		"git-cli",
