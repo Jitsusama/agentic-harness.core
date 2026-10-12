@@ -34,7 +34,11 @@ import {
 } from "../internal/quest/discovery.js";
 import type { QuestFieldLens } from "../internal/quest/fields.js";
 import { explainDocumentFrontMatter } from "../internal/quest/frontmatter.js";
-import { atomicWriteFile, atomicWriteUnderLock } from "../internal/quest/io.js";
+import {
+	atomicWriteFile,
+	atomicWriteUnderLock,
+	withQuestLock,
+} from "../internal/quest/io.js";
 import { mutateQuestFrontMatter } from "../internal/quest/mutate.js";
 import {
 	currentInstanceId,
@@ -262,35 +266,37 @@ export function unfocusDocument(state: QuestState): void {
  * so the caller can refuse rather than let memory run ahead of disk.
  */
 export function writeDocumentStage(state: QuestState, stage: Stage): boolean {
-	if (!state.documentPath) return false;
-	const questDir = state.questDir;
-	let text: string;
-	try {
-		text = readFileSync(state.documentPath, "utf8");
-	} catch {
-		return false;
-	}
-	const parsed = parseDocumentFrontMatter(text);
-	if (!parsed) return false;
-	const newFm: DocumentFrontMatter = {
-		...parsed.frontMatter,
-		stage: stage as DocumentStage,
-		updated: nowYmd(),
-	};
-	const newText = `${serializeDocumentFrontMatter(newFm)}\n${parsed.body}`;
-	// Validate by parse-back, matching the quest mutation core: never
-	// write a document the strict parser cannot read back, which would
-	// drop it to an out-of-vocabulary stage and make it invisible.
-	const reparsed = parseDocumentFrontMatter(newText);
-	if (!reparsed || reparsed.frontMatter.stage !== newFm.stage) return false;
 	const documentPath = state.documentPath;
-	if (questDir) {
-		atomicWriteUnderLock(questDir, documentPath, newText);
-	} else {
+	if (!documentPath) return false;
+	const questDir = state.questDir;
+	// Read and write under one lock, so another quest write cannot land
+	// between them and be overwritten with the body read before it.
+	const rewrite = (): boolean => {
+		let text: string;
+		try {
+			text = readFileSync(documentPath, "utf8");
+		} catch {
+			return false;
+		}
+		const parsed = parseDocumentFrontMatter(text);
+		if (!parsed) return false;
+		const newFm: DocumentFrontMatter = {
+			...parsed.frontMatter,
+			stage: stage as DocumentStage,
+			updated: nowYmd(),
+		};
+		const newText = `${serializeDocumentFrontMatter(newFm)}\n${parsed.body}`;
+		// Validate by parse-back, matching the quest mutation core: never
+		// write a document the strict parser cannot read back, which would
+		// drop it to an out-of-vocabulary stage and make it invisible.
+		const reparsed = parseDocumentFrontMatter(newText);
+		if (!reparsed || reparsed.frontMatter.stage !== newFm.stage) return false;
 		atomicWriteFile(documentPath, newText);
-	}
-	state.documentStage = stage;
-	return true;
+		return true;
+	};
+	const written = questDir ? withQuestLock(questDir, rewrite) : rewrite();
+	if (written) state.documentStage = stage;
+	return written;
 }
 
 const DOC_KIND_DIRS = ["plans", "research", "briefs", "reports"];

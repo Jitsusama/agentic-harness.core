@@ -271,8 +271,16 @@ export function bulkConcludeOrRetire(
 		liveChildren.length > 0
 			? ` Warning: ${count(liveChildren.length, "live child quest")} ${verb(liveChildren.length, "remains", "remain")} under a sealed parent: ${liveChildren.join(", ")}.`
 			: "";
+	// Name every quest sealed: a sweep is final, and a count alone leaves
+	// the person to find out which ones it was.
+	const named = [...sealedIds]
+		.map((id) => {
+			const title = index.quests.get(id)?.doc.title;
+			return title ? `${id} (${title})` : id;
+		})
+		.join(", ");
 	return ok(
-		`${action === "conclude" ? "Concluded" : "Retired"} ${count(plan.changes.length, "quest")}.${warning}`,
+		`${action === "conclude" ? "Concluded" : "Retired"} ${count(plan.changes.length, "quest")}: ${named}.${warning}`,
 		{
 			changes: plan.changes,
 			dryRun: false,
