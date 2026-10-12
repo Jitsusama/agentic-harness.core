@@ -56,3 +56,52 @@ describe("detectDestructiveCommand", () => {
 		);
 	});
 });
+
+describe("the safer form of an irrecoverable command", () => {
+	it("names a remedy for every irrecoverable form", () => {
+		for (const cmd of [
+			"git push --force",
+			"git reset --hard",
+			"git clean -fd",
+			"git branch -D feature",
+			"git checkout -- .",
+		]) {
+			expect(detectDestructiveCommand(cmd)?.remedy, cmd).toMatch(/\S/);
+		}
+	});
+
+	it("leaves a risky command without a remedy", () => {
+		expect(detectDestructiveCommand("git rebase main")?.remedy).toBeUndefined();
+	});
+
+	it("rewrites a bare force push to a lease, keeping everything else", () => {
+		expect(
+			detectDestructiveCommand("git push --force origin feature")?.rewrite,
+		).toBe("git push --force-with-lease origin feature");
+		expect(
+			detectDestructiveCommand("cd repo && git push -f origin feature")
+				?.rewrite,
+		).toBe("cd repo && git push --force-with-lease origin feature");
+	});
+
+	it("offers no rewrite where the safe form needs a judgement", () => {
+		// Stashing first, or deleting a branch only when merged, changes what
+		// the command means, so the agent has to choose it.
+		for (const cmd of [
+			"git reset --hard",
+			"git clean -fd",
+			"git branch -D feature",
+			"git checkout -- .",
+		]) {
+			expect(detectDestructiveCommand(cmd)?.rewrite, cmd).toBeUndefined();
+		}
+	});
+
+	it("does not mistake a commit message for a force push", () => {
+		// Only the push's own flag is rewritten; the same text elsewhere in
+		// the line is somebody's words.
+		expect(detectDestructiveCommand("git push -f origin x-f")?.rewrite).toBe(
+			"git push --force-with-lease origin x-f",
+		);
+	});
+});

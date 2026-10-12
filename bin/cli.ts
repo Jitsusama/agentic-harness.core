@@ -101,10 +101,11 @@ interface PreToolUseInput {
 	tool_input?: { command?: string };
 }
 
-/** A plain-text explanation of why a destructive command was flagged. */
+/** Why a destructive command was flagged, and what to run instead. */
 function historyReason(match: DestructiveMatch): string {
 	const label = match.severity === "irrecoverable" ? "Destructive" : "Risky";
-	return `${label} command: ${match.description}`;
+	const said = `${label} command: ${match.description}`;
+	return match.remedy ? `${said} ${match.remedy}` : said;
 }
 
 /** Build the hook's JSON stdout for a deny or ask decision. */
