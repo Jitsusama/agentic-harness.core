@@ -15,7 +15,7 @@
  * wizard is not something a tool call needs to pause for - nothing
  * intercepts anything. It is a workflow the user asks for, which is
  * exactly the shape a Claude Code *skill* already covers (see
- * skills/tdd, skills/quest): a markdown file teaching Claude to run
+ * skills/quest): a markdown file teaching Claude to run
  * a sequence of Bash-invoked CLI calls and carry the human-facing
  * conversation itself (ask for a client ID, tell the user to check
  * their browser, report success). No hook, no new capability -

@@ -7,8 +7,8 @@
  * gate/deps.ts for why. pi backs this with its session log; a
  * PreToolUse hook is a stateless-per-invocation process with no
  * session object to read one back from, so this backs it with a
- * small JSON file instead, the same shape tdd's and quest's own
- * state files already use.
+ * small JSON file instead, the same shape quest's own state file
+ * already uses.
  *
  * Scoped to the command's effective cwd rather than to a Claude
  * Code conversation: a hook invocation carries no session id in
