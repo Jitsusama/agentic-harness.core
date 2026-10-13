@@ -6,13 +6,14 @@
 
 import type { Page } from "puppeteer-core";
 import { getCookiesForUrl } from "./extract.js";
-import { StaleKeyError } from "./setup.js";
+import { KeyringSetupNeeded, StaleKeyError } from "./setup.js";
 
 /**
  * Inject the user's Chrome session cookies for a URL into a
  * puppeteer page. Best-effort: if cookies can't be read (no
  * Chrome profile, Keychain denied, etc.) we silently continue
- * without them.
+ * without them. A key that is stale or not yet read from the keyring
+ * is reported instead, since setup fixes it.
  */
 export async function injectCookies(page: Page, url: string): Promise<void> {
 	try {
@@ -21,8 +22,9 @@ export async function injectCookies(page: Page, url: string): Promise<void> {
 			await page.setCookie(...cookies);
 		}
 	} catch (err) {
-		// Stale key errors need to propagate so the user gets guidance
+		// Key errors need to propagate so the user gets guidance
 		if (err instanceof StaleKeyError) throw err;
+		if (err instanceof KeyringSetupNeeded) throw err;
 		// Everything else gets a silent fallback because cookies are optional.
 	}
 }
