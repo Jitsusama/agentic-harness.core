@@ -11,7 +11,13 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getDecryptionKey, isSetUp, StaleKeyError } from "./setup.js";
+import {
+	type CookieKeys,
+	getDecryptionKeys,
+	isSetUp,
+	KeyringSetupNeeded,
+	StaleKeyError,
+} from "./setup.js";
 
 /** Microseconds between 1601-01-01 and 1970-01-01. */
 const CHROME_EPOCH_OFFSET = 11644473600n * 1_000_000n;
@@ -63,15 +69,34 @@ function findCookiesDb(): string | null {
 	return null;
 }
 
-function decrypt(encryptedValue: Buffer, key: Buffer): string | null {
-	if (encryptedValue.length < 4) return null;
+/**
+ * What came of opening one cookie: its value, no key for its
+ * version, or a key that would not open it.
+ */
+export type Decrypted =
+	| { value: string }
+	| { missing: keyof CookieKeys }
+	| { failed: true };
+
+/** Open one cookie value with the key for the version that sealed it. */
+export function decryptCookieValue(
+	encryptedValue: Buffer,
+	keys: CookieKeys,
+): Decrypted {
+	if (encryptedValue.length < 4) return { failed: true };
 
 	const prefix = encryptedValue.slice(0, 3).toString("ascii");
 	if (prefix !== "v10" && prefix !== "v11") {
-		return encryptedValue.toString("utf-8");
+		return { value: encryptedValue.toString("utf-8") };
 	}
+	const key = keys[prefix];
+	if (!key) return { missing: prefix };
 
-	const ciphertext = encryptedValue.slice(3);
+	const value = decrypt(encryptedValue.slice(3), key);
+	return value === null ? { failed: true } : { value };
+}
+
+function decrypt(ciphertext: Buffer, key: Buffer): string | null {
 	const iv = Buffer.alloc(16, 0x20);
 
 	try {
@@ -172,8 +197,8 @@ export async function getCookiesForUrl(
 	const dbPath = findCookiesDb();
 	if (!dbPath) return [];
 
-	const key = getDecryptionKey();
-	if (!key) return [];
+	const keys = getDecryptionKeys();
+	if (!keys.v10 && !keys.v11) return [];
 
 	const parsed = new URL(url);
 	const hostKeys = cookieHostKeys(parsed.hostname);
@@ -182,13 +207,19 @@ export async function getCookiesForUrl(
 	if (rows.length === 0) return [];
 
 	let decryptFailures = 0;
+	let missingKeyring = false;
 	const cookies: PuppeteerCookie[] = [];
 	for (const row of rows) {
-		const value = decrypt(row.encrypted_value, key);
-		if (value === null) {
+		const opened = decryptCookieValue(row.encrypted_value, keys);
+		if ("missing" in opened) {
+			missingKeyring = true;
+			continue;
+		}
+		if ("failed" in opened) {
 			decryptFailures++;
 			continue;
 		}
+		const { value } = opened;
 
 		const expiresUtc = BigInt(row.expires_utc);
 		const expires =
@@ -208,6 +239,10 @@ export async function getCookiesForUrl(
 		});
 	}
 
+	// Half a site's cookies is a signed-out session that looks signed
+	// in, so a cookie the keyring sealed is reported even when others
+	// opened.
+	if (missingKeyring) throw new KeyringSetupNeeded();
 	if (cookies.length === 0 && decryptFailures > 0 && isSetUp()) {
 		throw new StaleKeyError();
 	}

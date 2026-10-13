@@ -6,4 +6,10 @@
 export type { PuppeteerCookie } from "./extract.js";
 export { getCookiesForUrl } from "./extract.js";
 export { injectCookies } from "./inject.js";
-export { isSetUp, StaleKeyError, setupChromeKey } from "./setup.js";
+export {
+	hasCachedKey,
+	isSetUp,
+	KeyringSetupNeeded,
+	StaleKeyError,
+	setupChromeKey,
+} from "./setup.js";
