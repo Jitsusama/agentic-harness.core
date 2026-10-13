@@ -1,6 +1,6 @@
 {
 	"name": "@jitsusama/agentic-harness.core",
-	"version": "0.7.1",
+	"version": "0.7.2",
 	"description": "Pi-agnostic business logic for agentic-harness: state machines, guardian decisions, the quest domain model.",
 	"license": "MIT",
 	"type": "module",
