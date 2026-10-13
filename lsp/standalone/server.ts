@@ -139,6 +139,8 @@ export class StandaloneServer {
 	// Set from the initialize response; false means it pushes instead.
 	private pullSupported = false;
 	private version = 0;
+	private gone = false;
+	private readonly goneListeners = new Set<() => void>();
 
 	private constructor(
 		readonly serverName: string,
@@ -181,6 +183,9 @@ export class StandaloneServer {
 		// Swallow transport errors (a write after the child is killed);
 		// they are expected during dispose and must not go unhandled.
 		connection.onError(() => {});
+		// Whichever comes first says the server can answer nothing more.
+		child.once("exit", () => server.markGone());
+		connection.onClose(() => server.markGone());
 		// A push-style server publishes a file's diagnostics after it
 		// opens; capture them so a pull-incapable server still reports.
 		connection.onNotification(PublishDiagnosticsNotification.type, (params) => {
@@ -424,6 +429,33 @@ export class StandaloneServer {
 				contentChanges: [{ text }],
 			})
 			.catch(() => {});
+	}
+
+	/**
+	 * Call `listener` once this server can answer nothing more: its
+	 * process exited or its connection closed. At once if it already has.
+	 */
+	onGone(listener: () => void): void {
+		if (this.gone) {
+			listener();
+			return;
+		}
+		this.goneListeners.add(listener);
+	}
+
+	private markGone(): void {
+		if (this.gone) return;
+		this.gone = true;
+		// vscode-jsonrpc rejects the requests still waiting only when its
+		// connection is disposed, not when it closes, so a call caught by
+		// the death would otherwise wait out its whole timeout.
+		try {
+			this.connection.dispose();
+		} catch {
+			// Already torn down; the waiting requests went with it.
+		}
+		for (const listener of this.goneListeners) listener();
+		this.goneListeners.clear();
 	}
 
 	/** Release the connection and kill the server process. */
