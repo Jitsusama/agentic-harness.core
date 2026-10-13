@@ -70,6 +70,27 @@ describe("chartersOnDisk", () => {
 		const charters = await chartersOnDisk(dir);
 		expect(charters.get("security")).toContain("injection");
 	});
+
+	it("lets the first directory that holds an id win over later ones", async () => {
+		// The operator's own directory is asked before the lenses a package
+		// ships, so writing a file of the same name replaces a built-in one
+		// and every other built-in still answers.
+		const mine = await tmp("mine-");
+		const shipped = await tmp("shipped-");
+		const persona = (lens: string) =>
+			`---\nname: Lens\ndescription: A lens.\n---\n\n${lens}`;
+		await writeFile(join(mine, "security.md"), persona("Mine."), "utf8");
+		await writeFile(join(shipped, "security.md"), persona("Shipped."), "utf8");
+		await writeFile(join(shipped, "tests.md"), persona("Tests."), "utf8");
+
+		const charters = await chartersOnDisk([
+			mine,
+			join(tmpdir(), "no-such-dir-xyz"),
+			shipped,
+		]);
+		expect(charters.get("security")).toContain("Mine.");
+		expect(charters.get("tests")).toContain("Tests.");
+	});
 });
 
 describe("agentsInRepo", () => {

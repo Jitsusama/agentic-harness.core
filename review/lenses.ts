@@ -253,7 +253,13 @@ export function givenBy(
 }
 
 /**
- * Every charter the operator wrote, by persona id.
+ * Every charter on hand, by persona id.
+ *
+ * Several directories in the order they are asked, and the first to
+ * hold an id wins. That is how a package ships lenses that work with
+ * no setup while a file of the operator's own, under the same name,
+ * still replaces one: the operator's directory comes first. A single
+ * directory is the same thing with one entry.
  *
  * Read once per round rather than per participant, since six reviewers
  * naming three personas should not be six directory walks. A file that
@@ -262,8 +268,19 @@ export function givenBy(
  * sends somebody looking in the wrong place.
  */
 export async function chartersOnDisk(
-	dir: string,
+	dirs: string | readonly string[],
 ): Promise<Map<string, string>> {
+	const charters = new Map<string, string>();
+	for (const dir of typeof dirs === "string" ? [dirs] : dirs) {
+		for (const [id, charter] of await chartersIn(dir)) {
+			if (!charters.has(id)) charters.set(id, charter);
+		}
+	}
+	return charters;
+}
+
+/** The charters one directory holds, by persona id. */
+async function chartersIn(dir: string): Promise<Map<string, string>> {
 	const charters = new Map<string, string>();
 
 	let names: string[];
@@ -435,7 +452,9 @@ export async function lensesFor(
 	// the repo: a judge-only round would refuse over a reviewer's
 	// missing lens, and that reviewer is somebody it will never ask.
 	roster: Roster,
-	personaDir: string,
+	// Where charters are read from, first match winning: the operator's
+	// own directory before anything a package ships.
+	personaDir: string | readonly string[],
 	// Paths the change under review touches, so a lens the change itself
 	// wrote can be refused rather than obeyed.
 	touched: Touched,
