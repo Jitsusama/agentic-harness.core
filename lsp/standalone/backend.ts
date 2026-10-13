@@ -148,6 +148,16 @@ export function createStandaloneBackend(
 		if (existing) return { key, started: existing };
 		const started = StandaloneServer.start(server, root, binary);
 		pool.set(key, started);
+		// A server that died stays dead, and its connection answers every
+		// later call with "Connection is closed." Drop it from the pool, so
+		// the next call for this root starts one afresh. Only this entry:
+		// a replacement may already be in its place.
+		const evict = () => {
+			if (pool.get(key) === started) pool.delete(key);
+		};
+		// A start that failed goes too, rather than failing every later
+		// call the same way; the caller awaiting it still sees why.
+		started.then((live) => live.onGone(evict), evict);
 		return { key, started };
 	};
 
