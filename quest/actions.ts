@@ -57,6 +57,7 @@ export const QUEST_ACTIONS = [
 	"session-attach",
 	"session-detach",
 	"session-rename",
+	"spawn",
 	"spawn-tab",
 	"spawn-pane",
 	"spawn-window",
