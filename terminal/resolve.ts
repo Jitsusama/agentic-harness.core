@@ -1,18 +1,17 @@
 /**
- * Driver resolution: pick a usable terminal driver for the
- * current environment.
+ * Looking drivers up, and the older one-call spawn API.
  *
- * Resolution order:
- *
- * 1. The driver named in the `preferred` argument, when its
- *    `available()` returns true.
- * 2. Each registered driver in registration order, the
- *    first whose `available()` returns true wins.
- * 3. `undefined` when no driver is available (callers fall
- *    back to printing instructions, or refuse).
+ * `openTerminal` and `openTerminals` in `open.ts` are the way to open
+ * a shell: they discover, take the person's settings and plan. The
+ * functions here stay for callers written before them, and are built
+ * on the same planning, so they no longer pick a terminal whose binary
+ * happens to be installed over the one the session sits in.
  */
 
+import { linuxAncestry } from "../internal/terminal/ancestry.js";
 import { get, list } from "../internal/terminal/registry.js";
+import { sightChain } from "./discover.js";
+import { currentPlatform, openTerminal } from "./open.js";
 import type {
 	TerminalDriver,
 	TerminalLivenessCapability,
@@ -82,15 +81,24 @@ export function getLivenessProvider(
 }
 
 /**
- * The terminal surface the current pi process runs in, as a
- * probeable handle, from the first registered liveness-capable
- * driver that recognises the environment. Undefined when no driver
- * claims the current terminal (for example a bare shell with no
- * supported multiplexer).
+ * The terminal surface the current pi process runs in, as a probeable
+ * handle: the innermost terminal of the chain the session sits in that
+ * can name its surface. Undefined when the session sits in none.
+ *
+ * Runs when every session starts, so it reads environment variables
+ * and, on Linux, the process ancestry under `/proc`, which is a few
+ * file reads and catches a terminal's variables inherited from
+ * somewhere the session is not. Nothing is run.
  */
 export function identifyCurrentTerminal(): TerminalSessionHandle | undefined {
-	for (const driver of list()) {
-		if (!hasLivenessCapability(driver)) continue;
+	const drivers = list();
+	const ancestry = currentPlatform() === "linux" ? linuxAncestry() : undefined;
+	for (const sighting of sightChain(drivers, process.env, ancestry)) {
+		if (sighting.handle) return sighting.handle;
+	}
+	// A driver that predates sightings may still know its surface.
+	for (const driver of drivers) {
+		if (driver.sight || !hasLivenessCapability(driver)) continue;
 		const handle = driver.identifyCurrent();
 		if (handle) return handle;
 	}
@@ -98,9 +106,8 @@ export function identifyCurrentTerminal(): TerminalSessionHandle | undefined {
 }
 
 /**
- * Resolve the driver to use for a spawn. Preferred wins
- * when available; otherwise the first registered driver
- * whose `available()` says yes.
+ * Resolve the driver to use for a spawn. Preferred wins when it is
+ * available; otherwise the terminal the plan would open through.
  */
 export async function resolveDriver(
 	preferred?: string,
@@ -109,10 +116,16 @@ export async function resolveDriver(
 		const driver = get(preferred);
 		if (driver && (await driver.available())) return driver;
 	}
-	for (const driver of list()) {
-		if (await driver.available()) return driver;
+	try {
+		const { plan } = await openTerminal({}, { dryRun: true });
+		return get(plan.terminal) ?? get("fallback");
+	} catch {
+		// No plan can be made: fall back to the old first-available rule.
+		for (const driver of list()) {
+			if (await driver.available()) return driver;
+		}
+		return undefined;
 	}
-	return undefined;
 }
 
 /**
@@ -123,14 +136,7 @@ export async function spawnTerminal(
 	request: TerminalRequest,
 	preferred?: string,
 ): Promise<TerminalDriver> {
-	const driver = await resolveDriver(preferred);
-	if (!driver) {
-		throw new Error(
-			"No terminal driver available. Register one or seed the built-ins with `registerBuiltinTerminalDrivers`.",
-		);
-	}
-	await driver.spawn(request);
-	return driver;
+	return (await spawnTerminalSurface(request, preferred)).driver;
 }
 
 /**
@@ -146,11 +152,17 @@ export async function spawnTerminalSurface(
 	driver: TerminalDriver;
 	handle: TerminalSessionHandle | undefined;
 }> {
-	const driver = await resolveDriver(preferred);
-	if (!driver) {
+	if (list().length === 0) {
 		throw new Error(
 			"No terminal driver available. Register one or seed the built-ins with `registerBuiltinTerminalDrivers`.",
 		);
 	}
-	return { driver, handle: await driver.spawn(request) };
+	const opened = await openTerminal(request, {
+		...(preferred ? { call: { driver: preferred } } : {}),
+	});
+	const driver =
+		get(opened.plan.terminal) ??
+		get("fallback") ??
+		(list()[0] as TerminalDriver);
+	return { driver, handle: opened.handle };
 }

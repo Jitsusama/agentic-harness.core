@@ -72,6 +72,7 @@
 		"./remote": "./dist/remote/index.js",
 		"./process": "./dist/process/index.js",
 		"./work": "./dist/work/index.js",
+		"./terminal": "./dist/terminal/index.js",
 		"./review": "./dist/review/index.js",
 		"./web": "./dist/web/index.js",
 		"./web/a11y": "./dist/web/a11y/index.js",
