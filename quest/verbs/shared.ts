@@ -35,6 +35,10 @@ export interface QuestToolParams {
 	role?: string;
 	name?: string;
 	layout?: string;
+	/** spawn and restore: the terminal to open in, by driver or launcher id. */
+	terminal?: string;
+	/** spawn and restore: innermost or outermost, for a nested session. */
+	nesting?: string;
 	command?: string;
 	cwd?: string;
 	sessionId?: string;

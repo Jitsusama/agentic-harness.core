@@ -33,10 +33,12 @@ describe("registration", () => {
 		expect(getTerminalDriver("fake")).toBeUndefined();
 	});
 
-	it("registerBuiltinTerminalDrivers seeds wezterm, tmux, fallback", () => {
+	it("registerBuiltinTerminalDrivers seeds the four drivers and the fallback", () => {
 		registerBuiltinTerminalDrivers();
 		expect(listTerminalDrivers().map((d) => d.id)).toEqual([
+			"kitty",
 			"wezterm",
+			"zellij",
 			"tmux",
 			"fallback",
 		]);

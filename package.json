@@ -1,6 +1,6 @@
 {
 	"name": "@jitsusama/agentic-harness.core",
-	"version": "0.7.4",
+	"version": "0.8.0",
 	"description": "Pi-agnostic business logic for agentic-harness: state machines, guardian decisions, the quest domain model.",
 	"license": "MIT",
 	"type": "module",
@@ -72,6 +72,7 @@
 		"./remote": "./dist/remote/index.js",
 		"./process": "./dist/process/index.js",
 		"./work": "./dist/work/index.js",
+		"./terminal": "./dist/terminal/index.js",
 		"./review": "./dist/review/index.js",
 		"./web": "./dist/web/index.js",
 		"./web/a11y": "./dist/web/a11y/index.js",
