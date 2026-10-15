@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	detectSectionViolations,
 	PR_SECTIONS,
+	PR_SHAPE,
 	sectionGateDecision,
 	violationSignature,
 } from "../../sections/index.js";
@@ -13,9 +14,11 @@ const PR_CONFIG = {
 };
 
 const clean = [
-	"### 🌐 Situation",
+	"### 💡 TL;DR",
+	"Fixed.",
+	"### 🧩 Problem",
 	"broken",
-	"### 🔧 Resolution",
+	"### 🔧 Solution",
 	"fixed",
 	"### 🔬 Validation",
 	"proven",
@@ -52,5 +55,41 @@ describe("sectionGateDecision", () => {
 		const other = `${clean}\n### Notes\nstuff`;
 		const decision = sectionGateDecision(other, [firstSig], PR_CONFIG);
 		expect(decision.action).toBe("block");
+	});
+});
+
+describe("sectionGateDecision with a shape", () => {
+	const SHAPED = { ...PR_CONFIG, shape: PR_SHAPE };
+	const rambling = clean.replace(
+		"Fixed.",
+		"It was broken. Then we looked. Then we fixed it.",
+	);
+
+	it("ignores the shape when the config carries none", () => {
+		expect(sectionGateDecision(rambling, [], PR_CONFIG).action).toBe("allow");
+	});
+
+	it("blocks a section out of its shape, saying which rule", () => {
+		const decision = sectionGateDecision(rambling, [], SHAPED);
+		expect(decision.action).toBe("block");
+		expect(decision.message).toContain("TL;DR is 3 sentences");
+	});
+
+	it("reports headings and shape in one message, headings first", () => {
+		const decision = sectionGateDecision(
+			`${rambling}\n### Notes\nstuff`,
+			[],
+			SHAPED,
+		);
+		const headings = decision.message.indexOf("### Notes");
+		const shape = decision.message.indexOf("TL;DR is 3 sentences");
+		expect(headings).toBeGreaterThanOrEqual(0);
+		expect(shape).toBeGreaterThan(headings);
+	});
+
+	it("relents on the identical body, as it does for headings", () => {
+		const first = sectionGateDecision(rambling, [], SHAPED);
+		const again = sectionGateDecision(rambling, [first.signature], SHAPED);
+		expect(again.action).toBe("relent");
 	});
 });

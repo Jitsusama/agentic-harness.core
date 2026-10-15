@@ -53,7 +53,7 @@ import {
 	runTitleGate,
 	titleGateNote,
 } from "../internal/guardian/title-gate.js";
-import { ISSUE_SECTIONS, PR_SECTIONS } from "../sections/index.js";
+import { ISSUE_SECTIONS, PR_SECTIONS, PR_SHAPE } from "../sections/index.js";
 
 /** What a guardian check hands back to the hook dispatcher. */
 export interface GuardianHookResult {
@@ -82,6 +82,7 @@ function truncate(text: string): string {
 
 const PR_SECTION_CONFIG = {
 	sanctioned: PR_SECTIONS,
+	shape: PR_SHAPE,
 	entityLabel: "PR",
 	skill: "github-pr-format",
 };
