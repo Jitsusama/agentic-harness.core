@@ -60,16 +60,17 @@ describe("wording rules", () => {
 	});
 });
 
-// Each of these was refused by a word-list rule that has since been
-// removed, and each is an honest sentence: the rules were measured on
-// prose they were not tuned on and were wrong more often than right.
+// Each of these was refused by one of the nine word-list rules that
+// have since been removed, one sentence per rule, and each is an honest
+// sentence. The rules that fired on prose they were not tuned on were
+// wrong more often than right.
 // The judgement they tried to make is the skill's, not the gate's.
 describe("sentences the gate leaves to the writer's judgement", () => {
 	it.each([
 		[
 			"a universal that is literally true",
 			TLDR,
-			"Every guard except commit now reports, after every test.",
+			"The guard now runs after every commit.",
 		],
 		[
 			"a superlative that is not a hedge",
@@ -100,6 +101,16 @@ describe("sentences the gate leaves to the writer's judgement", () => {
 			"a description of starting state",
 			TLDR,
 			"Caches start empty now, where they were initially filled from disk.",
+		],
+		[
+			"a technical use of an assurance word",
+			VALIDATION,
+			"The robust median is reported beside the mean.",
+		],
+		[
+			"a pass that says where it ran",
+			VALIDATION,
+			"The tests pass in CI on Linux and macOS.",
 		],
 	])("accepts %s", (_what, section, text) => {
 		expect(found(body({ [section]: text }))).toEqual([]);
