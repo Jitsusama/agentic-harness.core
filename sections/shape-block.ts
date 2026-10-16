@@ -44,28 +44,10 @@ function line(v: ShapeViolation): string {
 			return `${name} is empty; say what it is for.`;
 		case "above":
 			return `${name} must be empty${quoted}; the body opens with the TL;DR. Put an issue line or stack note straight after the TL;DR's text.`;
-		case "unscoped":
-			return `${name} makes an unscoped claim with "${v.word}"${quoted}. Readers take it to mean nearly every case: give the count or name the set.`;
 		case "opener":
 			return `${name} opens with "${v.word}"; open with the thing that changed.`;
 		case "emphasis":
 			return `${name} uses bold; leave emphasis out of it.`;
-		case "history":
-			return `${name} tells the history ("${v.word}"); say what is true once this merges.`;
-		case "noReason":
-			return `${name} never gives a reason in its prose; say why in a sentence outside the list (because, instead of, rather than).`;
-		case "repeatedOpener":
-			return `${name} has ${v.actual} list items opening with "${v.word}"; open each with what tells it apart.`;
-		case "hedge":
-			return `${name} hedges with "${v.word}"${quoted}. Say what was checked, or where the checks stop.`;
-		case "assurance":
-			return `${name} asserts instead of showing ("${v.word}")${quoted}. Name the check and what it shows.`;
-		case "barePass":
-			return `${name} says "${v.word}" without naming the check${quoted}; say which tests or commands ran and what they show.`;
-		case "conversation":
-			return `${name} points at a conversation the reader missed ("${v.word}")${quoted}; say what the thing is.`;
-		case "selling":
-			return `${name} sells rather than shows ("${v.word}")${quoted}; give the number or leave the word out.`;
 	}
 }
 
@@ -83,6 +65,6 @@ export function formatShapeBlock(
 		"",
 		...violations.map((v) => `- ${line(v)}`),
 		"",
-		`See the ${skill} skill for what each section is for.`,
+		`These checks count and match exactly, so they cannot tell whether the description is true. Before sending it again, read it through the ${skill} skill's Before You Submit questions.`,
 	].join("\n");
 }

@@ -92,7 +92,7 @@ describe("detectShapeViolations", () => {
 	});
 
 	it("refuses a Solution that lists artifacts instead of behaviour", () => {
-		for (const label of ["**Docs:**", "Tests:", "**Dependency:**", "README:"]) {
+		for (const label of ["**Docs:**", "Tests:", "Files:", "README:"]) {
 			expect(
 				rules(
 					body({
@@ -100,6 +100,18 @@ describe("detectShapeViolations", () => {
 					}),
 				),
 			).toContain("artifactLists");
+		}
+	});
+
+	it("allows a dependency or setting labelled as such, since it is what the reader must act on", () => {
+		for (const label of ["**Dependency:**", "Config:"]) {
+			expect(
+				rules(
+					body({
+						[SOLUTION]: `Merge expands short ids.\n\n- ${label} core moves to 0.9.0, which renames the sections.`,
+					}),
+				),
+			).not.toContain("artifactLists");
 		}
 	});
 
