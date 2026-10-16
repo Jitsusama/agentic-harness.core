@@ -27,9 +27,11 @@ export const PR_SECTIONS = [
 /**
  * What each PR section may hold, from the github-pr-format skill. The
  * TL;DR is an eight-second read: 40 words at the 238 words a minute an
- * adult reads non-fiction. The other ceilings are generous on purpose,
- * well above what a good description needs, so that a complex change is
- * never squeezed into vagueness while an inventory still cannot pass.
+ * adult reads non-fiction. The other ceilings were set by experiment:
+ * writers treat a ceiling as a target, and at 180, 300 and 180 words the
+ * descriptions grew longer than the ones they replaced. At these, a
+ * whole description stays under about two minutes of reading while a
+ * complex change still has room to explain itself.
  */
 export const PR_SHAPE: BodyShape = {
 	headingFirst: true,
@@ -42,14 +44,14 @@ export const PR_SHAPE: BodyShape = {
 			bullets: 0,
 			links: 0,
 		},
-		[PR_SECTIONS[1]]: { words: 180, codeSpans: 3, bullets: 0 },
+		[PR_SECTIONS[1]]: { words: 120, codeSpans: 3, bullets: 0 },
 		[PR_SECTIONS[2]]: {
-			words: 300,
+			words: 200,
 			codeSpans: 8,
-			bullets: 7,
+			bullets: 5,
 			noArtifactLists: true,
 		},
-		[PR_SECTIONS[3]]: { words: 180, bullets: 7 },
+		[PR_SECTIONS[3]]: { words: 100, bullets: 5 },
 	},
 };
 
