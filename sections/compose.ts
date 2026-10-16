@@ -46,13 +46,49 @@ function isContextBlock(block: string): boolean {
 		.every((line) => /^\s*Part of #\d+/i.test(line) || /^\s*>/.test(line));
 }
 
+const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;
+const LITERAL_LINE = /^\s*(?:#{1,6}\s|>|\||\[[^\]]+\]:\s|<)/;
+
+/**
+ * Prose with its hard wraps taken out. GitHub renders every newline in
+ * a PR body as a line break, so a paragraph wrapped at 72 columns, the
+ * habit commit messages and markdown files teach, shows on the page as
+ * ragged short lines. A wrapped line is joined onto the one before it;
+ * list items, quotes, tables, headings, link definitions, HTML, fenced
+ * code and a line ending in a hard break are left as written.
+ */
+export function unwrapProse(text: string): string {
+	const out: string[] = [];
+	let fenced = false;
+	let joinable = false;
+	for (const line of text.split("\n")) {
+		if (/^\s*```/.test(line)) {
+			fenced = !fenced;
+			out.push(line);
+			joinable = false;
+			continue;
+		}
+		const blank = line.trim() === "";
+		const literal = fenced || blank || LITERAL_LINE.test(line);
+		if (joinable && !literal && !LIST_ITEM.test(line)) {
+			out[out.length - 1] = `${out.at(-1)} ${line.trim()}`;
+		} else {
+			out.push(line);
+		}
+		const last = out.at(-1) ?? "";
+		joinable = !literal && !/(?: {2}|\\)$/.test(last);
+	}
+	return out.join("\n");
+}
+
 function composeSections(
 	fields: Partial<PrFields>,
 	context: readonly string[],
 ): string {
 	const parts: string[] = [];
 	for (const field of PR_FIELDS) {
-		const text = fields[field]?.trim();
+		const raw = fields[field];
+		const text = raw === undefined ? undefined : unwrapProse(raw.trim());
 		if (text === undefined) continue;
 		const under =
 			field === "tldr"

@@ -6,6 +6,7 @@ export {
 	type PrFields,
 	readPrFields,
 	reviseFields,
+	unwrapProse,
 } from "./compose.js";
 export {
 	detectSectionViolations,

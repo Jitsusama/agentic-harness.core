@@ -6,6 +6,7 @@ import {
 	PR_SHAPE,
 	readPrFields,
 	reviseFields,
+	unwrapProse,
 } from "../../sections/index.js";
 
 const FIELDS = {
@@ -52,6 +53,40 @@ describe("composePrBody", () => {
 		expect(body).toContain(
 			`${PR_SECTIONS[1]}\n\n${FIELDS.problem}\n\n${PR_SECTIONS[2]}`,
 		);
+	});
+});
+
+describe("unwrapProse", () => {
+	it("joins a paragraph wrapped across lines, since GitHub shows every newline", () => {
+		expect(
+			unwrapProse("One sentence that\nwraps here.\n\nNext paragraph."),
+		).toBe("One sentence that wraps here.\n\nNext paragraph.");
+	});
+
+	it("keeps list items apart and joins an item's wrapped continuation", () => {
+		expect(unwrapProse("Lead in.\n- first item\n  continues\n- second")).toBe(
+			"Lead in.\n- first item continues\n- second",
+		);
+	});
+
+	it("leaves code, quotes, tables and link definitions as written", () => {
+		const literal =
+			"```\nline one\nline two\n```\n> a note\n> more\n| a | b |\n| - | - |\n[1]: https://example.com";
+		expect(unwrapProse(literal)).toBe(literal);
+	});
+
+	it("keeps a hard break the author asked for", () => {
+		expect(unwrapProse("Ends with a break  \nthen this.")).toBe(
+			"Ends with a break  \nthen this.",
+		);
+	});
+
+	it("is applied to every section a body is composed from", () => {
+		const body = composePrBody({
+			...FIELDS,
+			problem: "Merging failed 23\ntimes.",
+		});
+		expect(readPrFields(body).fields.problem).toBe("Merging failed 23 times.");
 	});
 });
 
