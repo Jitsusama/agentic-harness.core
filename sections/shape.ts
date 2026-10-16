@@ -176,9 +176,11 @@ export function sentencesOf(text: string): string[] {
 		.filter((s) => countWords(s) > 0);
 }
 
+/** The sentence's opening, marked as cut only when it was; a whole sentence is quoted without its closing stop. */
 function excerpt(sentence: string): string {
-	const opening = sentence.split(/\s+/).slice(0, EXCERPT_WORDS).join(" ");
-	return `${opening}...`;
+	const words = sentence.split(/\s+/);
+	if (words.length <= EXCERPT_WORDS) return sentence.replace(/[.!?]+$/, "");
+	return `${words.slice(0, EXCERPT_WORDS).join(" ")}...`;
 }
 
 function violation(

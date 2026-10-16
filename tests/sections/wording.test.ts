@@ -135,4 +135,17 @@ describe("wording rules", () => {
 		expect(message).toContain('"Most"');
 		expect(message).toContain("give the count or name the set");
 	});
+
+	it("quotes a short sentence whole, without marking it as cut", () => {
+		const message = formatShapeBlock(
+			detectShapeViolations(
+				body({ [VALIDATION]: "It should work." }),
+				PR_SHAPE,
+			),
+			"pull request",
+			"github-pr-format",
+		);
+		expect(message).toContain('("It should work")');
+		expect(message).not.toContain("work.");
+	});
 });
