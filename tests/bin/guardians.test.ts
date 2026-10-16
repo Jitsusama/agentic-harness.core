@@ -95,11 +95,14 @@ describe("checkCommitGuardian", () => {
 });
 
 const VALID_PR_BODY = [
-	"### 🌐 Situation",
+	"### 💡 TL;DR",
+	"The login bug is fixed.",
+	"",
+	"### 🧩 Problem",
 	"Something happened.",
 	"",
-	"### 🔧 Resolution",
-	"Fixed it.",
+	"### 🔧 Solution",
+	"Fixed it, so logins work.",
 	"",
 	"### 🔬 Validation",
 	"Tested it.",

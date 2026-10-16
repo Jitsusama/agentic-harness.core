@@ -10,9 +10,10 @@
 
 import { describe, expect, it } from "vitest";
 import { proposalComplaint } from "../../review/conventions.js";
+import { composePrBody } from "../../sections/index.js";
 
-/** A body with the three sanctioned sections and nothing else. */
-const GOOD_BODY = [
+/** A body in the retired three-section shape, which no longer passes. */
+const RETIRED_BODY = [
 	"### 🌐 Situation",
 	"",
 	"The handle is never closed.",
@@ -25,6 +26,15 @@ const GOOD_BODY = [
 	"",
 	"A test that fails without the change.",
 ].join("\n");
+
+/** A body with the four sanctioned sections, each in its shape. */
+const GOOD_BODY = composePrBody({
+	tldr: "A leaked file handle is now closed when the parser finishes.",
+	problem: "The handle is never closed.",
+	solution:
+		"Close it. Nothing else closes the handle, so the parser stops leaking.",
+	validation: "A test that fails without the change.",
+});
 
 describe("holding a proposal to the conventions", () => {
 	it("passes a well-formed title and body", () => {
@@ -48,11 +58,44 @@ describe("holding a proposal to the conventions", () => {
 	it("refuses a missing section", () => {
 		const complaint = proposalComplaint(
 			"Close the Leaked Handle",
-			"### 🌐 Situation\n\nOnly one.",
+			"### 💡 TL;DR\n\nOnly one.",
 		);
 
 		expect(complaint).toContain("missing");
-		expect(complaint).toContain("Resolution");
+		expect(complaint).toContain("Problem");
+	});
+
+	it("refuses the retired three-section shape, naming the new sections", () => {
+		const complaint = proposalComplaint(
+			"Close the Leaked Handle",
+			RETIRED_BODY,
+		);
+
+		expect(complaint).toContain("Situation");
+		expect(complaint).toContain("TL;DR");
+	});
+
+	it("refuses a TL;DR longer than an eight-second read", () => {
+		const long = Array.from({ length: 45 }, () => "word").join(" ");
+		const complaint = proposalComplaint(
+			"Close the Leaked Handle",
+			GOOD_BODY.replace(
+				"A leaked file handle is now closed when the parser finishes.",
+				`${long}.`,
+			),
+		);
+
+		expect(complaint).toContain("TL;DR is 45 words");
+		expect(complaint).toContain("github-pr-format");
+	});
+
+	it("refuses a Solution that inventories files", () => {
+		const complaint = proposalComplaint(
+			"Close the Leaked Handle",
+			GOOD_BODY.replace("Close it.", "Close it.\n\n- **Tests:** added one."),
+		);
+
+		expect(complaint).toContain("lists artifacts");
 	});
 
 	it("refuses a conventional-commit title", () => {

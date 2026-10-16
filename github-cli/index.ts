@@ -30,7 +30,7 @@ export { GH_BODY_SPEC } from "./command-spec.js";
 const REQUIRED_FORM =
 	"The required form is:\n\n" +
 	"gh pr create --title '...' --body-file - <<'EOF'\n" +
-	"### \u{1F310} Situation\n...\nEOF\n\n" +
+	"### \u{1F4A1} TL;DR\n...\nEOF\n\n" +
 	"A quoted delimiter, stdin rather than a path, and nothing piped or wrapped " +
 	"around the command.";
 

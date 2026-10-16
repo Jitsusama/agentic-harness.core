@@ -27,9 +27,10 @@
 
 import { detectProseViolations, formatProseBlock } from "../prose/index.js";
 import {
-	detectSectionViolations,
-	formatSectionBlock,
+	detectBodyViolations,
+	formatBodyBlock,
 	PR_SECTIONS,
+	PR_SHAPE,
 } from "../sections/index.js";
 import { detectTitleViolations, formatTitleBlock } from "../title/index.js";
 
@@ -55,8 +56,11 @@ export function proposalComplaint(
 	// wrong. One refusal that says everything costs one rewrite.
 	const blocks = [
 		written
-			? formatSectionBlock(
-					detectSectionViolations(body, PR_SECTIONS),
+			? formatBodyBlock(
+					detectBodyViolations(body, {
+						sanctioned: PR_SECTIONS,
+						shape: PR_SHAPE,
+					}),
 					"pull request",
 					"github-pr-format",
 				)
