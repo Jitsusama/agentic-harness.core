@@ -43,15 +43,21 @@ export const PR_SHAPE: BodyShape = {
 			codeSpans: 0,
 			bullets: 0,
 			links: 0,
+			scoped: true,
+			headline: true,
+			plain: true,
 		},
-		[PR_SECTIONS[1]]: { words: 120, codeSpans: 3, bullets: 0 },
+		[PR_SECTIONS[1]]: { words: 120, codeSpans: 3, bullets: 0, plain: true },
 		[PR_SECTIONS[2]]: {
 			words: 200,
 			codeSpans: 8,
 			bullets: 5,
 			noArtifactLists: true,
+			reasoned: true,
+			distinctItems: true,
+			plain: true,
 		},
-		[PR_SECTIONS[3]]: { words: 100, bullets: 5 },
+		[PR_SECTIONS[3]]: { words: 100, bullets: 5, evidenced: true, plain: true },
 	},
 };
 

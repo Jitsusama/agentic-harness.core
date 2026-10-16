@@ -31,7 +31,7 @@ const RETIRED_BODY = [
 const GOOD_BODY = composePrBody({
 	tldr: "A leaked file handle is now closed when the parser finishes.",
 	problem: "The handle is never closed.",
-	solution: "Close it.",
+	solution: "Close it. Nothing else closes the handle, so the parser stops leaking.",
 	validation: "A test that fails without the change.",
 });
 

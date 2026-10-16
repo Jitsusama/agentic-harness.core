@@ -15,7 +15,7 @@ function body(parts: Partial<Record<string, string>> = {}): string {
 		[PROBLEM]:
 			"Merging failed 23 times in two months because GitHub wants the full id.",
 		[SOLUTION]:
-			"Merge expands a short id to the full one before it asks GitHub.",
+			"Merge expands a short id to the full one before it asks GitHub, because GitHub accepts only the full id.",
 		[VALIDATION]: "A test sends a short id and checks the full one arrives.",
 		...parts,
 	};

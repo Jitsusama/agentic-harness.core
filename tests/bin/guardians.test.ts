@@ -102,7 +102,7 @@ const VALID_PR_BODY = [
 	"Something happened.",
 	"",
 	"### 🔧 Solution",
-	"Fixed it.",
+	"Fixed it, so logins work.",
 	"",
 	"### 🔬 Validation",
 	"Tested it.",

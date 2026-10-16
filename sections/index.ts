@@ -31,3 +31,4 @@ export {
 	sentencesOf,
 } from "./shape.js";
 export { formatShapeBlock } from "./shape-block.js";
+export type { SectionWording, WordingRule } from "./wording.js";

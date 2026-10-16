@@ -18,9 +18,18 @@
  */
 
 import type { Violation } from "../gate/index.js";
+import {
+	type SectionWording,
+	type WordingRule,
+	wordingProblems,
+} from "./wording.js";
 
-/** What one section may hold. Every limit is a maximum; absent means no limit. */
-export interface SectionShape {
+/**
+ * What one section may hold. Every limit is a maximum; absent means no
+ * limit. The wording rules it inherits say which misleading phrasings
+ * the section refuses.
+ */
+export interface SectionShape extends SectionWording {
 	/** Words of prose, not counting code blocks, context lines or the link footer. */
 	readonly words?: number;
 	/** Sentences of prose. */
@@ -55,7 +64,8 @@ export type ShapeRule =
 	| "artifactLists"
 	| "sentenceWords"
 	| "empty"
-	| "above";
+	| "above"
+	| WordingRule;
 
 /** One way a body breaks its shape. */
 export interface ShapeViolation extends Violation {
@@ -69,6 +79,8 @@ export interface ShapeViolation extends Violation {
 	readonly actual: number;
 	/** The opening of the offending sentence or line, where there is one. */
 	readonly excerpt?: string;
+	/** For a wording rule, the word or phrase that broke it. */
+	readonly word?: string;
 }
 
 const FENCE = /```[\s\S]*?```/g;
@@ -241,6 +253,18 @@ export function detectShapeViolations(
 					violation(heading, "artifactLists", 0, labelled.length, labelled[0]),
 				);
 			}
+		}
+		for (const problem of wordingProblems(prose, rules)) {
+			found.push({
+				...violation(
+					heading,
+					problem.rule,
+					0,
+					problem.count ?? 1,
+					problem.sentence,
+				),
+				word: problem.word,
+			});
 		}
 		if (shape.sentenceWords !== undefined) {
 			for (const sentence of sentences) {
