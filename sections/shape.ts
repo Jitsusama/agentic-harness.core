@@ -96,10 +96,12 @@ const EXCERPT_WORDS = 10;
  * Labels that make a list item an inventory of what the diff touched
  * rather than a behaviour. Matched only as a label (the item's first
  * words followed by a colon), so a bullet that mentions tests in a
- * sentence is left alone.
+ * sentence is left alone. Dependencies and configuration are not on the
+ * list: "Dependency: core moves to 0.9.0, which breaks X" is the must-act
+ * item the skill asks for, so refusing the label would refuse it.
  */
 const ARTIFACT_LABEL =
-	/^\s*(?:[-*+]|\d+\.)\s+(?:\*\*)?(?:docs?|documentation|tests?|testing|files?|dependenc(?:y|ies)|deps|changelog|readme|config(?:uration)?)(?:\*\*)?\s*:/i;
+	/^\s*(?:[-*+]|\d+\.)\s+(?:\*\*)?(?:docs?|documentation|tests?|testing|files?|changelog|readme)(?:\*\*)?\s*:/i;
 
 /**
  * Lines that are context rather than prose: the tracking-issue line,
@@ -258,13 +260,7 @@ export function detectShapeViolations(
 		}
 		for (const problem of wordingProblems(prose, rules)) {
 			found.push({
-				...violation(
-					heading,
-					problem.rule,
-					0,
-					problem.count ?? 1,
-					problem.sentence,
-				),
+				...violation(heading, problem.rule, 0, 1, problem.sentence),
 				word: problem.word,
 			});
 		}

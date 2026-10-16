@@ -13,8 +13,7 @@ function body(parts: Partial<Record<string, string>> = {}): string {
 	const text = {
 		[TLDR]: "Merging with a short commit id now works the first time.",
 		[PROBLEM]: "Merging failed 23 times in two months.",
-		[SOLUTION]:
-			"Merge expands a short id before it asks GitHub, because GitHub accepts only the full id.",
+		[SOLUTION]: "Merge expands a short id before it asks GitHub.",
 		[VALIDATION]:
 			"A new test sends a short id and checks the full one arrives.",
 		...parts,
@@ -30,122 +29,90 @@ const found = (b: string) =>
 	}));
 
 describe("wording rules", () => {
-	it("passes a body that says how much, why and what was checked", () => {
+	it("passes a body that keeps the shape", () => {
 		expect(found(body())).toEqual([]);
 	});
 
-	it("refuses a TL;DR that claims every case without a count", () => {
+	it("refuses a TL;DR that opens with the PR rather than what changed", () => {
 		expect(
-			found(body({ [TLDR]: "Most guards now let work go ahead." })),
-		).toContainEqual({
-			section: TLDR,
-			rule: "unscoped",
-			word: "Most",
-		});
+			found(body({ [TLDR]: "This PR makes merging work first time." })),
+		).toEqual([{ section: TLDR, rule: "opener", word: "This PR" }]);
 	});
 
-	it("lets a TL;DR quantify when it gives the count or the exception", () => {
+	it("refuses bold in the TL;DR", () => {
 		expect(
-			found(body({ [TLDR]: "All nine guards now let work go ahead." })),
-		).toEqual([]);
-		expect(
-			found(body({ [TLDR]: "Every guard except commit now reports." })),
-		).toEqual([]);
-		expect(
-			found(body({ [TLDR]: "It now works every time, after all." })),
-		).toEqual([]);
+			found(body({ [TLDR]: "Merging now **works** the first time." })),
+		).toEqual([{ section: TLDR, rule: "emphasis", word: "**" }]);
 	});
 
-	it("leaves a universal in the Solution alone, where it cannot be counted", () => {
-		expect(
-			found(
-				body({
-					[SOLUTION]:
-						"Every compaction now reports what it did, so nothing is lost.",
-				}),
-			),
-		).toEqual([]);
-	});
-
-	it("refuses a TL;DR that opens with the PR, tells its history or uses bold", () => {
-		const rules = found(
-			body({
-				[TLDR]: "This PR makes **merging** work, after we tried a retry.",
-			}),
-		).map((v) => v.rule);
-		expect(rules).toEqual(
-			expect.arrayContaining(["opener", "emphasis", "history"]),
-		);
-	});
-
-	it("refuses a Solution whose prose never says why", () => {
-		expect(
-			found(
-				body({ [SOLUTION]: "Merge expands a short id before it asks GitHub." }),
-			),
-		).toContainEqual({
-			section: SOLUTION,
-			rule: "noReason",
-			word: "",
-		});
-	});
-
-	it("refuses list items that all open the same way", () => {
-		const list =
-			"Three changes, so each tool recovers:\n- Adds a retry\n- Adds a restart\n- Adds a lock";
-		expect(found(body({ [SOLUTION]: list })).map((v) => v.rule)).toContain(
-			"repeatedOpener",
-		);
-	});
-
-	it("refuses Validation that hedges, assures or passes without naming the check", () => {
-		const rules = found(
-			body({
-				[VALIDATION]:
-					"It should work in production. The change is thoroughly tested. All tests pass.",
-			}),
-		).map((v) => v.rule);
-		expect(rules).toEqual(["hedge", "assurance", "barePass"]);
-	});
-
-	it("accepts a pass that names how many tests ran", () => {
-		expect(
-			found(
-				body({ [VALIDATION]: "The 412 tests pass, including the new one." }),
-			),
-		).toEqual([]);
-	});
-
-	it("refuses a pointer at the session and a selling word in any section", () => {
-		const rules = found(
-			body({ [PROBLEM]: "As discussed, merging was significantly broken." }),
-		).map((v) => v.rule);
-		expect(rules).toEqual(["conversation", "selling"]);
-	});
-
-	it("says which word broke the rule and what to write instead", () => {
+	it("names the word that broke the rule and what to write instead", () => {
 		const message = formatShapeBlock(
 			detectShapeViolations(
-				body({ [TLDR]: "Most guards now let work go ahead." }),
+				body({ [TLDR]: "This change makes merging work." }),
 				PR_SHAPE,
 			),
 			"pull request",
 			"github-pr-format",
 		);
-		expect(message).toContain('"Most"');
-		expect(message).toContain("give the count or name the set");
+		expect(message).toContain('"This change"');
+		expect(message).toContain("open with the thing that changed");
+		expect(message).toContain("Before You Submit");
 	});
+});
 
-	it("quotes a short sentence whole, without marking it as cut", () => {
-		const message = formatShapeBlock(
-			detectShapeViolations(
-				body({ [VALIDATION]: "It should work." }),
-				PR_SHAPE,
-			),
-			"pull request",
-			"github-pr-format",
-		);
-		expect(message).toContain('("It should work")');
-		expect(message).not.toContain("work.");
+// Each of these was refused by one of the nine word-list rules that
+// have since been removed, one sentence per rule, and each is an honest
+// sentence. The rules that fired on prose they were not tuned on were
+// wrong more often than right.
+// The judgement they tried to make is the skill's, not the gate's.
+describe("sentences the gate leaves to the writer's judgement", () => {
+	it.each([
+		[
+			"a universal that is literally true",
+			TLDR,
+			"The guard now runs after every commit.",
+		],
+		[
+			"a superlative that is not a hedge",
+			VALIDATION,
+			"The new test feeds the line most likely to exceed the cap.",
+		],
+		[
+			"list items that open with an article",
+			SOLUTION,
+			"Three tools recover:\n- The merge expands a short id.\n- The lookup restarts its server.\n- The query shares one update.",
+		],
+		[
+			"a reason given without a connective",
+			SOLUTION,
+			"Merge expands a short id first: GitHub accepts only the full one.",
+		],
+		[
+			"a product's own term that looks like session talk",
+			PROBLEM,
+			"The phase 2 migration failed on 3 of 40 shops.",
+		],
+		[
+			"a statistical use of a selling word",
+			VALIDATION,
+			"The two arms did not differ significantly on any measure.",
+		],
+		[
+			"a description of starting state",
+			TLDR,
+			"Caches start empty now, where they were initially filled from disk.",
+		],
+		[
+			"a technical use of an assurance word",
+			VALIDATION,
+			"The robust median is reported beside the mean.",
+		],
+		[
+			"a pass that says where it ran",
+			VALIDATION,
+			"The tests pass in CI on Linux and macOS.",
+		],
+	])("accepts %s", (_what, section, text) => {
+		expect(found(body({ [section]: text }))).toEqual([]);
 	});
 });
