@@ -44,6 +44,7 @@ export type CostDimension =
 	| "day"
 	| "repo"
 	| "quest"
+	| "document"
 	| "thinking";
 
 /** A content-addressed store of billable turns. */
@@ -225,7 +226,29 @@ const FACT_COLUMNS: ReadonlyArray<{
 		type: "INTEGER",
 		value: (t) => t.compaction?.sinceTypedMs ?? null,
 	},
+	{ column: "quest", type: "TEXT", value: (t) => booked(t.quest) },
+	{ column: "document", type: "TEXT", value: (t) => booked(t.document) },
 ];
+
+/**
+ * A booking as stored: null when the log was not read for it, and the
+ * empty string when it was and named none. Null has to stay free for
+ * unknown, since only an unknown booking falls back to the session's,
+ * and a back-fill writes only over null.
+ */
+function booked(value: string | null | undefined): string | null {
+	if (value === undefined) return null;
+	return value ?? "";
+}
+
+/**
+ * The quest a turn is booked to, in SQL over `turns` and `sessions`
+ * under the names given: its own where the scan said, the session's
+ * where it did not.
+ */
+function questOf(turns: string, sessions: string): string {
+	return `CASE WHEN ${turns}.quest IS NULL THEN ${sessions}.quest ELSE NULLIF(${turns}.quest, '') END`;
+}
 
 /** SQLite has no boolean; unknown stays null rather than reading as false. */
 function flag(value: boolean | null | undefined): number | null {
@@ -276,7 +299,8 @@ SELECT t.digest, t.entry_id, t.session_id, t.timestamp,
 	t.preceded_by, t.gap_ms, t.new_tokens, t.stop_reason,
 	t.thinking_chars, t.text_chars, t.run_id, t.run_turn,
 	t.dropped_before, t.first_kept_entry_id,
-	s.repo, s.quest, s.cwd
+	s.repo, ${questOf("t", "s")} AS quest, s.cwd,
+	NULLIF(t.document, '') AS document
 FROM turns AS t
 LEFT JOIN sessions AS s ON s.session_id = t.session_id;
 
@@ -411,7 +435,8 @@ const GROUP_BY: Record<CostDimension, string> = {
 	// would drop it, and every share would then be a fraction of a total
 	// that quietly excluded most of the money.
 	repo: "COALESCE(sessions.repo, '')",
-	quest: "COALESCE(sessions.quest, '')",
+	quest: `COALESCE(${questOf("turns", "sessions")}, '')`,
+	document: "COALESCE(NULLIF(turns.document, ''), '')",
 	thinking: "COALESCE(turns.thinking_level, '')",
 };
 

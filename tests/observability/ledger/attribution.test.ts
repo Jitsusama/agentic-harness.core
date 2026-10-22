@@ -1,5 +1,9 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+	openLedgerReader,
 	openTurnStore,
 	type SessionRecord,
 	type TurnRecord,
@@ -119,5 +123,91 @@ describe("TurnStore attribution", () => {
 		expect(slices).toHaveLength(1);
 		expect(slices[0].key).toBe("QEST-B");
 		await store.close();
+	});
+});
+
+describe("TurnStore booking each turn where it sits", () => {
+	/** Each slice's cost, by its key. */
+	async function costs(
+		store: Awaited<ReturnType<typeof openTurnStore>>,
+		dimension: "quest" | "document",
+	) {
+		const slices = await store.costBy(dimension);
+		return Object.fromEntries(slices.map((s) => [s.key, s.cost]));
+	}
+
+	it("books a turn to the quest in force at it, not the session's last", async () => {
+		const store = await openTurnStore(":memory:");
+		await store.recordSession(session({ quest: "QEST-B" }));
+		await store.recordTurns([
+			turn({ digest: "d1", quest: "QEST-A" }),
+			turn({ digest: "d2", quest: "QEST-B" }),
+			turn({ digest: "d3", quest: null }),
+		]);
+
+		expect(await costs(store, "quest")).toEqual({
+			"QEST-A": 1,
+			"QEST-B": 1,
+			"": 1,
+		});
+		await store.close();
+	});
+
+	it("falls back to the session's quest for a turn the scan did not book", async () => {
+		const store = await openTurnStore(":memory:");
+		await store.recordSession(session({ quest: "QEST-B" }));
+		await store.recordTurns([turn({ digest: "d1" })]);
+
+		expect(await costs(store, "quest")).toEqual({ "QEST-B": 1 });
+		await store.close();
+	});
+
+	it("books a turn to the document focused at it", async () => {
+		const store = await openTurnStore(":memory:");
+		await store.recordTurns([
+			turn({ digest: "d1", quest: "QEST-A", document: "PLAN-1" }),
+			turn({ digest: "d2", quest: "QEST-A", document: "PLAN-1" }),
+			turn({ digest: "d3", quest: "QEST-A", document: null }),
+		]);
+
+		expect(await costs(store, "document")).toEqual({ "PLAN-1": 2, "": 1 });
+		await store.close();
+	});
+
+	it("gives a turn indexed before booking its quest on the next scan", async () => {
+		const store = await openTurnStore(":memory:");
+		await store.recordSession(session({ quest: "QEST-B" }));
+		await store.recordTurns([turn({ digest: "d1" })]);
+
+		await store.recordTurns([
+			turn({ digest: "d1", quest: "QEST-A", document: "PLAN-1" }),
+		]);
+
+		expect(await costs(store, "quest")).toEqual({ "QEST-A": 1 });
+		expect(await costs(store, "document")).toEqual({ "PLAN-1": 1 });
+		await store.close();
+	});
+
+	it("shows each turn's own booking in turn_facts", async () => {
+		const path = join(mkdtempSync(join(tmpdir(), "ledger-")), "ledger.db");
+		const store = await openTurnStore(path);
+		await store.recordSession(session({ quest: "QEST-B" }));
+		await store.recordTurns([
+			turn({ digest: "d1", quest: "QEST-A", document: "PLAN-1" }),
+			turn({ digest: "d2", quest: null, document: null }),
+			turn({ digest: "d3" }),
+		]);
+		const reader = await openLedgerReader(path);
+
+		const answer = await reader.query(
+			"SELECT digest, quest, document FROM turn_facts ORDER BY digest",
+		);
+
+		expect(answer.rows).toEqual([
+			{ digest: "d1", quest: "QEST-A", document: "PLAN-1" },
+			{ digest: "d2", quest: null, document: null },
+			{ digest: "d3", quest: "QEST-B", document: null },
+		]);
+		await Promise.all([reader.close(), store.close()]);
 	});
 });
