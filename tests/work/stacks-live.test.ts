@@ -241,6 +241,32 @@ describe("a stack in a real repository", () => {
 		expect(await rebaser.halted(dir)).toBe(true);
 		await rebaser.abandon(dir);
 	});
+
+	it("has a resume of its halt name the trunk, not a branch on the same commit", async () => {
+		const dir = await freshRepo("conflict-onto");
+		built.push(dir);
+		await git(dir, "checkout", "-qb", "lower");
+		await commitFile(dir, "shared.txt", "lower writes");
+		await git(dir, "checkout", "-q", "main");
+		writeFileSync(join(dir, "shared.txt"), "trunk\n");
+		await git(dir, "add", "shared.txt");
+		await git(dir, "commit", "-qm", "trunk writes");
+		// Trunk only as a remote's, with a merged branch left on its commit.
+		await git(dir, "update-ref", "refs/remotes/origin/main", "main");
+		await git(dir, "checkout", "-q", "-b", "merged");
+		await git(dir, "branch", "-q", "-D", "main");
+
+		const stacks = stacksIn();
+		await stacks.track(dir, "lower");
+		expect((await stacks.restack(dir, "origin/main")).kind).toBe("halted");
+
+		const rebaser = createGitRebaser({ exec });
+		expect(await rebaser.resume(dir)).toMatchObject({
+			kind: "halted",
+			onto: "origin/main",
+		});
+		await rebaser.abandon(dir);
+	});
 });
 
 describe("publishing against a real remote", () => {
@@ -689,9 +715,9 @@ describe("how a halt names what it was replaying onto", () => {
 		expect(again).toMatchObject({ kind: "halted", onto: "main" });
 	}, 30_000);
 
-	it("falls back to the commit when two branches sit on it", async () => {
-		// Ambiguous on purpose: the replay was onto some ref and nothing records
-		// which, so naming one would be inventing the answer rather than reading it.
+	it("falls back to the commit when raw git started it and two branches sit on it", async () => {
+		// Ambiguous on purpose: a replay started with raw git records no name, so
+		// naming one would be inventing the answer rather than reading it.
 		const dir = await freshRepo("halt-names-ambiguous");
 		built.push(dir);
 		const rebaser = createGitRebaser({ exec });
@@ -700,7 +726,7 @@ describe("how a halt names what it was replaying onto", () => {
 		await git(dir, "commit", "-qam", "branch writes shared again");
 		await git(dir, "branch", "also-here", "main");
 
-		await rebaser.rebase(dir, "main");
+		expect((await exec("git", ["-C", dir, "rebase", "main"])).code).not.toBe(0);
 		writeFileSync(join(dir, "shared.txt"), "settled\n", "utf8");
 		await git(dir, "add", "shared.txt");
 		const again = await rebaser.resume(dir);

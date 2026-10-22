@@ -25,7 +25,7 @@
  */
 
 import type { Exec } from "../exec/index.js";
-import type { WorkRebaser } from "./rebase.js";
+import { recordOnto, type WorkRebaser } from "./rebase.js";
 import {
 	orderStack,
 	planReorder,
@@ -623,6 +623,9 @@ export function createGitStacks(deps: {
 				const replay = await exec("git", unattended(args));
 
 				if (replay.code !== 0) {
+					// So a resume of this halt names the parent, not whichever
+					// branch happens to sit on its commit.
+					await recordOnto(exec, treePath, step.onto);
 					const conflicted = await conflictsIn(exec, treePath);
 					results.push({
 						branch: step.branch,

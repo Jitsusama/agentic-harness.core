@@ -8,6 +8,11 @@
  * for raw git. So resume stages what is plainly settled, and only that: a
  * text file both sides changed, with no conflict marker left in it. Run
  * against real git, since what counts as unmerged is git's to say.
+ *
+ * A resumed halt also has to say what the replay is onto, which git keeps
+ * only as a commit. Named after whichever branch sat on that commit, a
+ * replay onto origin/main was once reported as onto a merged branch left
+ * there, and the agent stopped to work out which base was real.
  */
 
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -51,6 +56,8 @@ async function halted(
 	base: Record<string, string | Buffer>,
 	onMain: Record<string, string | Buffer | null>,
 	onTopic: Record<string, string | Buffer | null>[],
+	onto = "main",
+	before: () => Promise<void> = async () => {},
 ) {
 	await commit(base, "base");
 	await git(repo, "checkout", "-q", "-b", "topic");
@@ -60,7 +67,8 @@ async function halted(
 	await git(repo, "checkout", "-q", "main");
 	await commit(onMain, "main moves");
 	await git(repo, "checkout", "-q", "topic");
-	const outcome = await rebaser().rebase(repo, "main");
+	await before();
+	const outcome = await rebaser().rebase(repo, onto);
 	expect(outcome.kind).toBe("halted");
 	return outcome;
 }
@@ -181,5 +189,68 @@ describe("leaving unsettled what is not plainly settled", () => {
 		const outcome = await rebaser().resume(repo);
 
 		expect(outcome).toMatchObject({ kind: "halted", conflicted: ["notes.md"] });
+	});
+});
+
+describe("naming what a resumed replay is onto", () => {
+	/**
+	 * Trunk only as a remote's, with a merged branch left on the same commit,
+	 * as the tree was on 20 October.
+	 */
+	async function remoteTrunk(): Promise<void> {
+		await git(repo, "update-ref", "refs/remotes/origin/main", "main");
+		await git(repo, "branch", "merged", "main");
+		await git(repo, "branch", "-q", "-D", "main");
+	}
+
+	it("names the ref it was started onto, not a branch on the same commit", async () => {
+		await halted(
+			{ "notes.md": "a\n" },
+			{ "notes.md": "main\n" },
+			[{ "notes.md": "topic\n" }],
+			"origin/main",
+			remoteTrunk,
+		);
+
+		const outcome = await rebaser().resume(repo);
+
+		expect(outcome).toMatchObject({ kind: "halted", onto: "origin/main" });
+	});
+
+	it("leaves nothing of the name behind once the replay ends, either way", async () => {
+		const three = () =>
+			halted({ "notes.md": "a\n" }, { "notes.md": "main\n" }, [
+				{ "notes.md": "topic\n" },
+			]);
+		await three();
+		writeFileSync(join(repo, "notes.md"), "main, topic\n");
+		expect(await rebaser().resume(repo)).toMatchObject({ kind: "replayed" });
+		expect(await rebaser().halted(repo)).toBe(false);
+
+		// Again from the start, this time abandoned.
+		disposeRepo(repo);
+		repo = await freshRepo("rebase-settle");
+		await three();
+		expect(await rebaser().abandon(repo)).toMatchObject({ kind: "abandoned" });
+		expect(await rebaser().halted(repo)).toBe(false);
+	});
+
+	it("says which commit that was, once the ref has moved on", async () => {
+		await halted(
+			{ "notes.md": "a\n" },
+			{ "notes.md": "main\n" },
+			[{ "notes.md": "topic\n" }],
+			"origin/main",
+			remoteTrunk,
+		);
+		const onto = await git(repo, "rev-parse", "--short=8", "merged");
+		await git(repo, "update-ref", "refs/remotes/origin/main", "merged~1");
+
+		const outcome = await rebaser().resume(repo);
+
+		expect(outcome).toMatchObject({
+			kind: "halted",
+			onto: `origin/main at ${onto}`,
+		});
 	});
 });
