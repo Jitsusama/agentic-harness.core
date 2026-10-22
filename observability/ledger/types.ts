@@ -55,6 +55,21 @@ export interface TurnRecord {
 	readonly facts?: TurnFacts;
 	/** Compaction only: how the summary was written and what surrounded it. */
 	readonly compaction?: CompactionFacts;
+	/**
+	 * The quest in force where the turn sits in its log: its id, null when
+	 * the log says none was loaded, and absent when the harness reading
+	 * the log does not say. A session moves between quests and puts them
+	 * down, so booking a turn to the session's last quest charges one
+	 * quest for another's work, and work done after an unload to neither.
+	 * Absent falls back to the session's quest.
+	 */
+	readonly quest?: string | null;
+	/**
+	 * The document focused where the turn sits, such as a plan's id, in
+	 * the same three states as `quest`, with no fallback: a session's
+	 * last document is no guess at an earlier turn's.
+	 */
+	readonly document?: string | null;
 }
 
 /**
