@@ -40,13 +40,24 @@ import { unattended } from "./unattended.js";
 
 /**
  * What a replay settled by itself on the way: files where both sides only
- * added (see `appends.ts`), and, once it finished, lines the branch added
- * that still cite a number one of its entries moved off. Both are absent
- * when there is nothing to say.
+ * added (see `appends.ts`), files whose citations it rewrote for a number an
+ * earlier halt moved, and, once it finished, lines the branch added that
+ * still cite a number one of its entries moved off. Each is absent when
+ * there is nothing to say.
  */
 export interface Settling {
 	settled?: readonly SettledFile[];
+	recited?: readonly string[];
 	stale?: readonly StaleCitation[];
+}
+
+/** Only what a replay's settling has to say, without its empty keys. */
+export function settlingOf(carried: Settling): Settling {
+	return {
+		...(carried.settled ? { settled: carried.settled } : {}),
+		...(carried.recited ? { recited: carried.recited } : {}),
+		...(carried.stale ? { stale: carried.stale } : {}),
+	};
 }
 
 /** Where a replay got to. */
@@ -67,6 +78,7 @@ export type RebaseOutcome =
 			/** Paths that disagree, which is what has to be settled. */
 			conflicted: readonly string[];
 			settled?: readonly SettledFile[];
+			recited?: readonly string[];
 	  }
 	| { kind: "refused"; reason: string };
 
@@ -89,6 +101,7 @@ export type ResumeOutcome =
 			at?: string;
 			conflicted: readonly string[];
 			settled?: readonly SettledFile[];
+			recited?: readonly string[];
 	  }
 	| { kind: "abandoned"; branch: string }
 	| { kind: "refused"; reason: string };
@@ -284,6 +297,7 @@ export type CarriedOn =
 			kind: "halted";
 			conflicted: readonly string[];
 			settled?: readonly SettledFile[];
+			recited?: readonly string[];
 	  }
 	| { kind: "refused"; reason: string };
 
@@ -315,13 +329,23 @@ export async function carryOn(
 					}
 				})();
 	const settled: SettledFile[] = [];
-	const some = () => (settled.length > 0 ? { settled } : {});
+	const recited = new Set<string>();
+	const some = () => ({
+		...(settled.length > 0 ? { settled } : {}),
+		...(recited.size > 0 ? { recited: [...recited] } : {}),
+	});
 
 	for (let round = 0; round < CARRY_ON_LIMIT; round += 1) {
-		const now = await settleAdditions(exec, treePath);
+		const now = await settleAdditions(exec, treePath, moves);
 		settled.push(...now.settled);
 		moves.push(...now.moves);
-		if (round === 0 && options.onlyIfSettled && now.settled.length === 0)
+		for (const path of now.recited) recited.add(path);
+		if (
+			round === 0 &&
+			options.onlyIfSettled &&
+			now.settled.length === 0 &&
+			now.recited.length === 0
+		)
 			return { kind: "untouched" };
 
 		const conflicted = await conflictedIn(exec, treePath);
@@ -607,10 +631,7 @@ export function createGitRebaser(deps: { exec: Exec }): WorkRebaser {
 					onto,
 					...(at === undefined ? {} : { at }),
 					...(carried.kind === "halted"
-						? {
-								conflicted: carried.conflicted,
-								...(carried.settled ? { settled: carried.settled } : {}),
-							}
+						? { conflicted: carried.conflicted, ...settlingOf(carried) }
 						: { conflicted }),
 				};
 			}
@@ -636,13 +657,7 @@ export function createGitRebaser(deps: { exec: Exec }): WorkRebaser {
 				return { ...carried, ...(await replaying(treePath)) };
 			}
 			if (carried.kind === "refused") return carried;
-			const settling =
-				carried.kind === "replayed"
-					? {
-							...(carried.settled ? { settled: carried.settled } : {}),
-							...(carried.stale ? { stale: carried.stale } : {}),
-						}
-					: {};
+			const settling = carried.kind === "replayed" ? settlingOf(carried) : {};
 			const branch =
 				(await ask(exec, treePath, ["rev-parse", "--abbrev-ref", "HEAD"])) ??
 				"HEAD";

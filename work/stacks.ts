@@ -30,6 +30,7 @@ import {
 	type CarriedOn,
 	carryOn,
 	recordOnto,
+	settlingOf,
 	type WorkRebaser,
 } from "./rebase.js";
 import {
@@ -64,6 +65,8 @@ export interface ReplayResult {
 	conflicted?: readonly string[];
 	/** Files where both sides only added, settled on the way (see `appends.ts`). */
 	settled?: readonly SettledFile[];
+	/** Files whose citations were rewritten for a number an earlier halt moved. */
+	recited?: readonly string[];
 	/** Lines the branch added still citing a number one of its entries moved off. */
 	stale?: readonly StaleCitation[];
 }
@@ -648,9 +651,7 @@ export function createGitStacks(deps: {
 						onto: step.onto,
 						outcome: "halted",
 						conflicted,
-						...(carried?.kind === "halted" && carried.settled
-							? { settled: carried.settled }
-							: {}),
+						...(carried?.kind === "halted" ? settlingOf(carried) : {}),
 					});
 					// Everything above this is unreachable until the halt is
 					// settled, and saying so is the difference between a
@@ -676,12 +677,7 @@ export function createGitStacks(deps: {
 					branch: step.branch,
 					onto: step.onto,
 					outcome: "replayed",
-					...(carried?.kind === "replayed" && carried.settled
-						? { settled: carried.settled }
-						: {}),
-					...(carried?.kind === "replayed" && carried.stale
-						? { stale: carried.stale }
-						: {}),
+					...(carried?.kind === "replayed" ? settlingOf(carried) : {}),
 				});
 			}
 

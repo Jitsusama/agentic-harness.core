@@ -9,6 +9,7 @@ import {
 	type Move,
 	readMerge,
 	recite,
+	reciteConflicts,
 	staleIn,
 } from "../../work/appends.js";
 
@@ -117,6 +118,44 @@ describe("rewriting citations", () => {
 		expect(recite("§20 D120 D12x ID12 D12", moves, "docs/HISTORY.md")).toBe(
 			"§20 D120 D12x ID12 D13",
 		);
+	});
+});
+
+describe("a conflict the replay's own rewrite made", () => {
+	const moves: Move[] = [
+		{ path: "docs/HISTORY.md", prefix: "", from: 2, to: 3 },
+	];
+
+	function recited(text: string) {
+		const pieces = readMerge(text);
+		if (!pieces) throw new Error("unreadable merge");
+		return reciteConflicts(pieces, moves, "AGENTS.md")?.join("");
+	}
+
+	it("takes the replayed side, rewritten the same way", () => {
+		expect(
+			recited(
+				merged(
+					"# Agents\n\n",
+					"See HISTORY \u00a73.\n",
+					"See HISTORY \u00a72.\n",
+					"See HISTORY \u00a72.\n\nAlso HISTORY \u00a72.\n",
+				),
+			),
+		).toBe("# Agents\n\nSee HISTORY \u00a73.\n\nAlso HISTORY \u00a73.\n");
+	});
+
+	it("declines when the landed side changed anything else", () => {
+		expect(
+			recited(
+				merged(
+					"",
+					"See HISTORY \u00a73, now.\n",
+					"See HISTORY \u00a72.\n",
+					"See HISTORY \u00a72.\nMore.\n",
+				),
+			),
+		).toBeUndefined();
 	});
 });
 

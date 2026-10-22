@@ -175,6 +175,36 @@ describe("a replay where both sides only added to a Markdown file", () => {
 			stale: [{ path: "AGENTS.md", line: 3, cites: "HISTORY §2" }],
 		});
 	});
+
+	it("carries a later commit through the conflict its own rewrite made", async () => {
+		// Rewriting the first commit's citation changes the line the second
+		// commit's change sits beside, so git no longer applies it, though it
+		// disagrees with nothing anyone wrote. Found live on 22 October.
+		await diverged(
+			{ "docs/HISTORY.md": HISTORY, "AGENTS.md": "# Agents\n" },
+			{ "docs/HISTORY.md": `${HISTORY}\n## 2. Landed\n\nTheirs.\n` },
+			[
+				{
+					"docs/HISTORY.md": `${HISTORY}\n## 2. Mine\n\nOurs.\n`,
+					"AGENTS.md": "# Agents\n\nSee HISTORY §2.\n",
+				},
+				{ "AGENTS.md": "# Agents\n\nSee HISTORY §2.\n\nAlso HISTORY §2.\n" },
+			],
+		);
+
+		const outcome = await rebaser().rebase(repo, "main");
+
+		expect(outcome).toMatchObject({
+			kind: "replayed",
+			settled: [{ path: "docs/HISTORY.md", cited: ["AGENTS.md"] }],
+			recited: ["AGENTS.md"],
+		});
+		expect(outcome).not.toHaveProperty("stale");
+		expect(read("AGENTS.md")).toBe(
+			"# Agents\n\nSee HISTORY §3.\n\nAlso HISTORY §3.\n",
+		);
+		expect(await git(repo, "status", "--porcelain")).toBe("");
+	});
 });
 
 describe("what is left for someone to settle", () => {
@@ -226,6 +256,33 @@ describe("what is left for someone to settle", () => {
 		writeFileSync(join(repo, "src/lib.rs"), "fn a() { landed(); mine() }\n");
 		expect(await rebaser().resume(repo)).toMatchObject({ kind: "replayed" });
 		expect(read("docs/HISTORY.md")).toContain("## 3. Mine");
+	});
+
+	it("never rewrites a citation inside a file still in conflict", async () => {
+		// Rewriting it would mean staging it, which marks its conflict settled
+		// and commits git's markers.
+		await diverged(
+			{ "docs/HISTORY.md": HISTORY, "src/lib.rs": "fn a() {}\n" },
+			{
+				"docs/HISTORY.md": `${HISTORY}\n## 2. Landed\n`,
+				"src/lib.rs": "fn a() { landed() }\n",
+			},
+			[
+				{
+					"docs/HISTORY.md": `${HISTORY}\n## 2. Mine\n`,
+					"src/lib.rs": "fn a() { mine() } // HISTORY \u00a72\n",
+				},
+			],
+		);
+
+		const outcome = await rebaser().rebase(repo, "main");
+
+		expect(outcome).toMatchObject({
+			kind: "halted",
+			conflicted: ["src/lib.rs"],
+		});
+		expect(read("src/lib.rs")).toContain("<<<<<<<");
+		expect(read("src/lib.rs")).toContain("// HISTORY \u00a72");
 	});
 
 	it("keeps a hand-settled file as it was settled when resuming", async () => {
