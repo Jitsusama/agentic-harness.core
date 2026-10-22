@@ -9,11 +9,8 @@
 
 import { isAbsolute, join, resolve } from "node:path";
 import { type SimpleCommand, tokenize } from "../../command/index.js";
-import {
-	stripHeredocBodies,
-	stripShellData,
-	unquote,
-} from "../../shell/index.js";
+import { stripShellData, unquote } from "../../shell/index.js";
+import { matchHeredocs } from "../../shell/parse.js";
 import { createdBy, removedBy, unwrap } from "./bash-effects.js";
 
 /** What kind of write, if any, a bash command performs. */
@@ -66,8 +63,9 @@ const BASH_WRITE_PATTERNS = [
  * target is an unjudged write, while a spurious one is inert unless it
  * happens to name tracked code.
  */
-export function bashWriteTargets(command: string): string[] {
-	const skeleton = stripShellData(stripHeredocBodies(command));
+export function bashWriteTargets(written: string): string[] {
+	const command = readable(written);
+	const skeleton = stripShellData(command);
 	const assigned = assignmentsIn(skeleton, command);
 	const targets: string[] = [];
 	const add = (token: string | undefined): void => {
@@ -134,6 +132,40 @@ function patternTargets(skeleton: string): string[] {
 	return found;
 }
 
+/**
+ * A command with what can only mislead a reading of its writes taken
+ * out, keeping every offset but the heredocs'.
+ *
+ * A heredoc's body is data, so it goes, but what its opening line says
+ * after the heredoc's word stays: `cat <<EOF > out.txt` writes out.txt,
+ * and `cat <<'EOF' | tee -a log.md` writes log.md, while a reading that
+ * dropped the whole opener, as removing the heredoc outright did, saw
+ * neither.
+ *
+ * Arithmetic, `$((3 > 2))` and `(( n > 5 ))`, and a `[[ a > b ]]` test
+ * are blanked to a word of the same length, since their `>` compares
+ * and read as a redirect it named a file called `2`. Blanked rather than
+ * removed, so a value assigned from one is still an assignment and a
+ * test is still a command.
+ */
+function readable(command: string): string {
+	const blank = (whole: string) => "0".repeat(whole.length);
+	let result = command.replace(ARITHMETIC, blank).replace(TEST, blank);
+	for (const heredoc of matchHeredocs(result).reverse()) {
+		result =
+			result.slice(0, heredoc.index) +
+			heredoc.openerRest +
+			result.slice(heredoc.index + heredoc.length);
+	}
+	return result;
+}
+
+/** `$((...))` or `((...))`, holding parentheses one level deep. */
+const ARITHMETIC = /\$?\(\((?:[^()]|\([^()]*\))*\)\)/g;
+
+/** `[[ ... ]]`, whose brackets stand apart from what they test. */
+const TEST = /\[\[\s(?:[^\]]|\](?!\]))*\s\]\]/g;
+
 /** Where a command runs: the session directory and the home `~` names. */
 export interface CommandPlace {
 	readonly cwd: string;
@@ -173,10 +205,11 @@ export interface ResolvedWrites {
  * a subshell is left to the check on disk.
  */
 export function resolveBashWrites(
-	command: string,
+	written: string,
 	place: CommandPlace,
 ): ResolvedWrites {
-	const skeleton = stripShellData(stripHeredocBodies(command));
+	const command = readable(written);
+	const skeleton = stripShellData(command);
 	const known = assignmentsIn(skeleton, command);
 	const paths: string[] = [];
 	const removed: string[] = [];
@@ -517,7 +550,7 @@ function expand(token: string, known: Map<string, string>): string | undefined {
  * positive.
  */
 export function classifyBashWrite(command: string): BashWriteKind {
-	const skeleton = stripShellData(stripHeredocBodies(command));
+	const skeleton = stripShellData(readable(command));
 	if (GIT_MUTATING.test(skeleton)) return "git-mutating";
 	if (BASH_WRITE_PATTERNS.some((rx) => rx.test(skeleton))) return "bash-write";
 	return "read-only";

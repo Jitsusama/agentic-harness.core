@@ -369,3 +369,56 @@ describe("a target the command names through a variable", () => {
 		).toEqual(["plain.txt"]);
 	});
 });
+
+describe("what a heredoc's opening line says after it", () => {
+	const where = { cwd: "/session", home: "/home/me" };
+
+	it("counts a redirect written after the heredoc's word", () => {
+		const command = "cat <<EOF > out.txt\nhello\nEOF";
+		expect(resolveBashWrites(command, where).paths).toEqual([
+			"/session/out.txt",
+		]);
+		expect(bashWriteTargets(command)).toEqual(["out.txt"]);
+		expect(classifyBashWrite(command)).toBe("bash-write");
+	});
+
+	it("counts a tee the heredoc is piped into, where the command ran", () => {
+		const command = "cd /tree && cat <<'EOF' | tee -a log.md\nx\nEOF";
+		expect(resolveBashWrites(command, where).paths).toEqual(["/tree/log.md"]);
+	});
+
+	it("counts nothing for a heredoc piped into a reader", () => {
+		const command = "python3 - <<'PY' 2>&1 | tail -5\nprint(1)\nPY";
+		expect(resolveBashWrites(command, where)).toEqual({
+			paths: [],
+			removed: [],
+			unresolved: [],
+		});
+		expect(bashWriteTargets(command)).toEqual([]);
+	});
+});
+
+describe("a comparison is not a redirect", () => {
+	const where = { cwd: "/session", home: "/home/me" };
+
+	it("reads > inside [[ ]] as a comparison", () => {
+		const command = "[[ $count > 9 ]] && echo yes";
+		expect(resolveBashWrites(command, where).paths).toEqual([]);
+		expect(bashWriteTargets(command)).toEqual([]);
+	});
+
+	it("reads > inside arithmetic as a comparison", () => {
+		const command = "x=$((3 > 2)); echo $x";
+		expect(resolveBashWrites(command, where).paths).toEqual([]);
+		expect(bashWriteTargets(command)).toEqual([]);
+		expect(classifyBashWrite("echo $((3 > 2))")).toBe("read-only");
+	});
+
+	it("still counts a real redirect beside an arithmetic test", () => {
+		const command = "(( n > 5 )) && echo big > big.txt";
+		expect(resolveBashWrites(command, where).paths).toEqual([
+			"/session/big.txt",
+		]);
+		expect(bashWriteTargets(command)).toEqual(["big.txt"]);
+	});
+});
