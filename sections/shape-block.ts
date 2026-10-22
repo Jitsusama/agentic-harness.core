@@ -23,7 +23,7 @@ function line(v: ShapeViolation): string {
 	const quoted = v.excerpt ? ` ("${v.excerpt}")` : "";
 	switch (v.rule) {
 		case "words":
-			return `${name} is ${v.actual} words; it may be at most ${v.limit}. Keep what the reader needs and cut the rest.`;
+			return `${name} is ${v.actual} words; it may be at most ${v.limit}, so cut ${plural(v.actual - v.limit, "word", "words")}. Keep what the reader needs and cut the rest.`;
 		case "sentences":
 			return `${name} is ${plural(v.actual, "sentence", "sentences")}; it may be at most ${v.limit}.`;
 		case "codeSpans":
