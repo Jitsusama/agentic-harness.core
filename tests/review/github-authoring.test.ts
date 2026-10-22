@@ -266,7 +266,8 @@ describe("merging", () => {
 
 		await githubAuthoring(exec).merge(ref, { expectedHead: "abc123" });
 
-		const sent = JSON.parse(calls[0]?.input ?? "{}") as Record<string, unknown>;
+		const merged = calls.find((call) => call.args.join(" ").includes("merge"));
+		const sent = JSON.parse(merged?.input ?? "{}") as Record<string, unknown>;
 		expect(sent.sha).toBe("abc123");
 	});
 
@@ -279,16 +280,81 @@ describe("merging", () => {
 		expect(sent.merge_method).toBe("squash");
 	});
 
-	it("sends no method when none is named", async () => {
-		// Rather than picking one. Which merge a repo wants is the repo's
-		// settled policy, and overriding it silently rewrites history a
-		// way the project did not choose.
-		const { exec, calls } = fakeExec([{ when: ["merge"], stdout: "{}" }]);
+	it("sends no method when none is named and the repo takes merge commits", async () => {
+		// Leaving it out asks GitHub for a merge commit, which is what a
+		// repo that allows them has always had from here.
+		const { exec, calls } = fakeExec([
+			{ when: ["merge"], stdout: "{}" },
+			{ when: ["repos/o/r"], stdout: '{"allow_merge_commit":true}' },
+		]);
 
 		await githubAuthoring(exec).merge(ref, {});
 
-		const sent = JSON.parse(calls[0]?.input ?? "{}") as Record<string, unknown>;
+		const merged = calls.find((call) => call.args.join(" ").includes("merge"));
+		const sent = JSON.parse(merged?.input ?? "{}") as Record<string, unknown>;
 		expect(sent).not.toHaveProperty("merge_method");
+	});
+
+	it("merges the way the repo allows when none is named", async () => {
+		// Leaving the method out is not neutral: GitHub reads it as a merge
+		// commit, and five merges in a week failed on repos that forbid
+		// them. The repo's own settings say which ways it takes.
+		const { exec, calls } = fakeExec([
+			{ when: ["merge"], stdout: "{}" },
+			{
+				when: ["repos/o/r"],
+				stdout:
+					'{"allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":true}',
+			},
+		]);
+
+		await githubAuthoring(exec).merge(ref, {});
+
+		const merged = calls.find((call) => call.args.join(" ").includes("merge"));
+		const sent = JSON.parse(merged?.input ?? "{}") as Record<string, unknown>;
+		expect(sent.merge_method).toBe("squash");
+	});
+
+	it("joins the merge queue where the repo requires one", async () => {
+		// GitHub refuses the merge endpoint outright on a queued branch,
+		// and the agent was left to find the queue by hand.
+		const { exec, calls } = fakeExec([
+			{
+				when: ["pulls/7/merge"],
+				code: 1,
+				stderr: "gh: Changes must be made through the merge queue (HTTP 405)",
+			},
+			{ when: ["repos/o/r/pulls/7"], stdout: '{"node_id":"PR_kw7"}' },
+			{ when: ["enqueuePullRequest"], stdout: "{}" },
+		]);
+
+		const outcome = await githubAuthoring(exec).merge(ref, {
+			expectedHead: "abc123",
+		});
+
+		expect(outcome.kind).toBe("enqueued");
+		const queued = calls.find((call) =>
+			call.args.join(" ").includes("enqueuePullRequest"),
+		);
+		expect(queued?.args.join(" ")).toContain("id=PR_kw7");
+		expect(queued?.args.join(" ")).toContain("head=abc123");
+	});
+
+	it("says a change already in the queue is queued, not failed", async () => {
+		const { exec } = fakeExec([
+			{
+				when: ["pulls/7/merge"],
+				code: 1,
+				stderr: "gh: Pull Request is in the merge queue. (HTTP 405)",
+			},
+		]);
+
+		const outcome = await githubAuthoring(exec).merge(ref, {});
+
+		expect(outcome).toEqual({
+			kind: "enqueued",
+			detail: "already in the merge queue",
+		});
 	});
 });
 
