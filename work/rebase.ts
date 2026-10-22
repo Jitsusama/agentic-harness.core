@@ -19,16 +19,44 @@
  * halted resume again and again, until the agent left for raw git. So resume
  * stages a file that is plainly settled (see `settledIn`), and leaves every
  * other kind of conflict for the one resolving it to stage.
+ *
+ * The one conflict settled without being asked is two additions at the same
+ * place in a Markdown file, which is how appended logs conflict on nearly
+ * every replay (see `appends.ts`). A halt made only of those carries on by
+ * itself, and says what it settled and which numbers it moved.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { Exec } from "../exec/index.js";
+import {
+	type Move,
+	type SettledFile,
+	type StaleCitation,
+	settleAdditions,
+	staleIn,
+} from "./appends.js";
 import { unattended } from "./unattended.js";
+
+/**
+ * What a replay settled by itself on the way: files where both sides only
+ * added (see `appends.ts`), and, once it finished, lines the branch added
+ * that still cite a number one of its entries moved off. Both are absent
+ * when there is nothing to say.
+ */
+export interface Settling {
+	settled?: readonly SettledFile[];
+	stale?: readonly StaleCitation[];
+}
 
 /** Where a replay got to. */
 export type RebaseOutcome =
-	| { kind: "replayed"; branch: string; onto: string; commits: number }
+	| ({
+			kind: "replayed";
+			branch: string;
+			onto: string;
+			commits: number;
+	  } & Settling)
 	| { kind: "already-there"; branch: string; onto: string }
 	| {
 			kind: "halted";
@@ -38,12 +66,13 @@ export type RebaseOutcome =
 			at?: string;
 			/** Paths that disagree, which is what has to be settled. */
 			conflicted: readonly string[];
+			settled?: readonly SettledFile[];
 	  }
 	| { kind: "refused"; reason: string };
 
 /** How a halted replay ends. */
 export type ResumeOutcome =
-	| { kind: "replayed"; branch: string }
+	| ({ kind: "replayed"; branch: string } & Settling)
 	| {
 			kind: "halted";
 			/**
@@ -59,6 +88,7 @@ export type ResumeOutcome =
 			onto?: string;
 			at?: string;
 			conflicted: readonly string[];
+			settled?: readonly SettledFile[];
 	  }
 	| { kind: "abandoned"; branch: string }
 	| { kind: "refused"; reason: string };
@@ -193,6 +223,183 @@ export async function recordOnto(
 	} catch {
 		// Unrecorded is the fallback the halt already has.
 	}
+}
+
+/** Git's own directory for the replay in progress, when there is one. */
+async function replayDirectory(
+	exec: Exec,
+	treePath: string,
+): Promise<string | undefined> {
+	const said = await ask(exec, treePath, [
+		"rev-parse",
+		"--git-path",
+		"rebase-merge",
+	]);
+	if (said === undefined) return undefined;
+	const directory = isAbsolute(said) ? said : join(treePath, said);
+	return existsSync(directory) ? directory : undefined;
+}
+
+/**
+ * The numbers a replay moved, kept beside the replay for the same reason the
+ * onto name is: a halt can be settled by hand and resumed in another call,
+ * and the lines still citing an old number are only known once it finishes.
+ */
+const MOVES_NOTE = "agentic-harness-moves.json";
+
+/** The moves noted so far, or none when nothing is noted or it will not read. */
+function notedMoves(directory: string | undefined): Move[] {
+	if (directory === undefined) return [];
+	try {
+		const read: unknown = JSON.parse(
+			readFileSync(join(directory, MOVES_NOTE), "utf8"),
+		);
+		return Array.isArray(read) ? read.filter(isMove) : [];
+	} catch {
+		return [];
+	}
+}
+
+/** Whether a noted value is a move as `appends.ts` writes it. */
+function isMove(value: unknown): value is Move {
+	if (typeof value !== "object" || value === null) return false;
+	const { path, prefix, from, to } = value as Record<string, unknown>;
+	return (
+		typeof path === "string" &&
+		typeof prefix === "string" &&
+		typeof from === "number" &&
+		typeof to === "number"
+	);
+}
+
+/** Bound on halts settled in one call, far past any branch's commit count. */
+const CARRY_ON_LIMIT = 10_000;
+
+/** How carrying on from a halt went. */
+export type CarriedOn =
+	/** Nothing could be settled without a judgement, so nothing was done. */
+	| { kind: "untouched" }
+	| ({ kind: "replayed" } & Settling)
+	| {
+			kind: "halted";
+			conflicted: readonly string[];
+			settled?: readonly SettledFile[];
+	  }
+	| { kind: "refused"; reason: string };
+
+/**
+ * Carry a halted replay on as far as it goes without anyone's judgement:
+ * settle what only added, stage what was plainly settled, and continue,
+ * halt after halt, until a conflict needs someone or the replay ends.
+ *
+ * `onlyIfSettled` is for a halt just reached, where carrying on is worth it
+ * only when something was settled; a resume always carries on.
+ */
+export async function carryOn(
+	exec: Exec,
+	treePath: string,
+	options: { onlyIfSettled: boolean },
+): Promise<CarriedOn> {
+	const first = await replayDirectory(exec, treePath);
+	const moves = notedMoves(first);
+	const onto =
+		first === undefined
+			? undefined
+			: (() => {
+					try {
+						return (
+							readFileSync(join(first, "onto"), "utf8").trim() || undefined
+						);
+					} catch {
+						return undefined;
+					}
+				})();
+	const settled: SettledFile[] = [];
+	const some = () => (settled.length > 0 ? { settled } : {});
+
+	for (let round = 0; round < CARRY_ON_LIMIT; round += 1) {
+		const now = await settleAdditions(exec, treePath);
+		settled.push(...now.settled);
+		moves.push(...now.moves);
+		if (round === 0 && options.onlyIfSettled && now.settled.length === 0)
+			return { kind: "untouched" };
+
+		const conflicted = await conflictedIn(exec, treePath);
+		const plain = await settledIn(exec, treePath, conflicted);
+		if (plain.length > 0) {
+			const added = await exec("git", [
+				"-C",
+				treePath,
+				"add",
+				"--",
+				...plain.map((path) => `:(top,literal)${path}`),
+			]);
+			if (added.code !== 0) {
+				return {
+					kind: "refused",
+					reason: added.stderr.trim() || `git add exited ${added.code}`,
+				};
+			}
+		}
+		const left =
+			plain.length > 0 ? await conflictedIn(exec, treePath) : conflicted;
+
+		// Kept while git's directory still exists, so a later resume knows them.
+		const directory = await replayDirectory(exec, treePath);
+		if (directory !== undefined && moves.length > 0) {
+			try {
+				writeFileSync(join(directory, MOVES_NOTE), JSON.stringify(moves));
+			} catch {
+				// Unnoted, a later resume only names fewer stale citations.
+			}
+		}
+		if (left.length > 0) return { kind: "halted", conflicted: left, ...some() };
+
+		// Continuing a conflicted pick commits with `-e`, so without this git
+		// opens an editor on a stdin nobody is attached to and waits for a human
+		// who will never arrive.
+		const result = await exec(
+			"git",
+			unattended(["-C", treePath, "rebase", "--continue"]),
+		);
+		if (result.code === 0) {
+			const stale =
+				moves.length > 0 && onto !== undefined
+					? staleIn(
+							(await ask(exec, treePath, [
+								"-c",
+								"core.quotepath=off",
+								"diff",
+								"-U0",
+								"--no-color",
+								"--no-ext-diff",
+								onto,
+								"HEAD",
+							])) ?? "",
+							moves,
+						)
+					: [];
+			return {
+				kind: "replayed",
+				...some(),
+				...(stale.length > 0 ? { stale } : {}),
+			};
+		}
+		const still = await conflictedIn(exec, treePath);
+		if (still.length === 0) {
+			return {
+				kind: "refused",
+				reason:
+					result.stderr.trim() || `git rebase --continue exited ${result.code}`,
+			};
+		}
+		// The next commit halted too; see whether it only added as well.
+	}
+	return {
+		kind: "halted",
+		conflicted: await conflictedIn(exec, treePath),
+		...some(),
+	};
 }
 
 /** Replay with plain git. */
@@ -377,6 +584,18 @@ export function createGitRebaser(deps: { exec: Exec }): WorkRebaser {
 			const conflicted = await conflictedIn(exec, treePath);
 			if (conflicted.length > 0 || (await isHalted(treePath))) {
 				await recordOnto(exec, treePath, onto);
+				const carried = await carryOn(exec, treePath, { onlyIfSettled: true });
+				if (carried.kind === "replayed") {
+					const { kind: _, ...settling } = carried;
+					return {
+						kind: "replayed",
+						branch,
+						onto,
+						commits: Number.parseInt(before ?? "0", 10) || 0,
+						...settling,
+					};
+				}
+				if (carried.kind === "refused") return carried;
 				const at = await ask(exec, treePath, [
 					"rev-parse",
 					"--short",
@@ -387,7 +606,12 @@ export function createGitRebaser(deps: { exec: Exec }): WorkRebaser {
 					branch,
 					onto,
 					...(at === undefined ? {} : { at }),
-					conflicted,
+					...(carried.kind === "halted"
+						? {
+								conflicted: carried.conflicted,
+								...(carried.settled ? { settled: carried.settled } : {}),
+							}
+						: { conflicted }),
 				};
 			}
 
@@ -407,60 +631,22 @@ export function createGitRebaser(deps: { exec: Exec }): WorkRebaser {
 					reason: "No replay is part-way through in this tree.",
 				};
 			}
-			const conflicted = await conflictedIn(exec, treePath);
-			const settled = await settledIn(exec, treePath, conflicted);
-			if (settled.length > 0) {
-				const added = await exec("git", [
-					"-C",
-					treePath,
-					"add",
-					"--",
-					...settled.map((path) => `:(top,literal)${path}`),
-				]);
-				if (added.code !== 0) {
-					return {
-						kind: "refused",
-						reason: added.stderr.trim() || `git add exited ${added.code}`,
-					};
-				}
+			const carried = await carryOn(exec, treePath, { onlyIfSettled: false });
+			if (carried.kind === "halted") {
+				return { ...carried, ...(await replaying(treePath)) };
 			}
-			const left =
-				settled.length > 0 ? await conflictedIn(exec, treePath) : conflicted;
-			if (left.length > 0) {
-				return {
-					kind: "halted",
-					conflicted: left,
-					...(await replaying(treePath)),
-				};
-			}
-
-			// The call that hung. Continuing a conflicted pick commits with `-e`,
-			// so without this git opens an editor on a stdin nobody is attached to
-			// and waits for a human who will never arrive.
-			const result = await exec(
-				"git",
-				unattended(["-C", treePath, "rebase", "--continue"]),
-			);
-			if (result.code !== 0) {
-				const still = await conflictedIn(exec, treePath);
-				if (still.length > 0)
-					return {
-						kind: "halted",
-						conflicted: still,
-						...(await replaying(treePath)),
-					};
-				return {
-					kind: "refused",
-					reason:
-						result.stderr.trim() ||
-						`git rebase --continue exited ${result.code}`,
-				};
-			}
-
+			if (carried.kind === "refused") return carried;
+			const settling =
+				carried.kind === "replayed"
+					? {
+							...(carried.settled ? { settled: carried.settled } : {}),
+							...(carried.stale ? { stale: carried.stale } : {}),
+						}
+					: {};
 			const branch =
 				(await ask(exec, treePath, ["rev-parse", "--abbrev-ref", "HEAD"])) ??
 				"HEAD";
-			return { kind: "replayed", branch };
+			return { kind: "replayed", branch, ...settling };
 		},
 
 		async abandon(treePath) {

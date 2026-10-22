@@ -690,6 +690,50 @@ describe("a restack that skipped a branch", () => {
 	}, 30_000);
 });
 
+describe("a restack through a log both sides appended to", () => {
+	it("settles the additions and carries on up the stack", async () => {
+		// Appended logs halted nearly every replay of a busy repository, and a
+		// restack walks several branches, so each such halt stranded the rest.
+		const dir = await freshRepo("restack-appends");
+		built.push(dir);
+		const log = "# History\n\n## 1. One\n";
+		const write = async (text: string, subject: string) => {
+			writeFileSync(join(dir, "HISTORY.md"), text, "utf8");
+			await git(dir, "add", "HISTORY.md");
+			await git(dir, "commit", "-qm", subject);
+		};
+		await write(log, "base");
+		await git(dir, "checkout", "-qb", "topic");
+		await write(`${log}\n## 2. Mine\n`, "topic adds");
+		await git(dir, "checkout", "-qb", "above");
+		await commitFile(dir, "above.txt", "above adds");
+		await git(dir, "checkout", "-q", "main");
+		await write(`${log}\n## 2. Landed\n`, "main adds");
+		const stacks = stacksIn();
+		await stacks.track(dir, "topic");
+		await stacks.track(dir, "above", "topic");
+
+		const outcome = await mustRestack(stacks, dir, "main");
+
+		expect(outcome.results).toMatchObject([
+			{
+				branch: "topic",
+				outcome: "replayed",
+				settled: [
+					{
+						path: "HISTORY.md",
+						renumbered: [{ from: "HISTORY §2", to: "HISTORY §3" }],
+					},
+				],
+			},
+			{ branch: "above", outcome: "replayed" },
+		]);
+		expect(await git(dir, "show", "above:HISTORY.md")).toBe(
+			`${log}\n## 2. Landed\n\n## 3. Mine`,
+		);
+	}, 30_000);
+});
+
 describe("how a halt names what it was replaying onto", () => {
 	it("names the branch, the way the first halt already did", async () => {
 		// Git records the target as a commit, since by then the ref that named it is

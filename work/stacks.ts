@@ -25,7 +25,13 @@
  */
 
 import type { Exec } from "../exec/index.js";
-import { recordOnto, type WorkRebaser } from "./rebase.js";
+import type { SettledFile, StaleCitation } from "./appends.js";
+import {
+	type CarriedOn,
+	carryOn,
+	recordOnto,
+	type WorkRebaser,
+} from "./rebase.js";
 import {
 	orderStack,
 	planReorder,
@@ -56,6 +62,10 @@ export interface ReplayResult {
 	outcome: "replayed" | "already-there" | "halted" | "skipped";
 	/** Paths that disagree, when it halted. */
 	conflicted?: readonly string[];
+	/** Files where both sides only added, settled on the way (see `appends.ts`). */
+	settled?: readonly SettledFile[];
+	/** Lines the branch added still citing a number one of its entries moved off. */
+	stale?: readonly StaleCitation[];
 }
 
 /** How a restack went. */
@@ -622,16 +632,25 @@ export function createGitStacks(deps: {
 				// of the stack behind it.
 				const replay = await exec("git", unattended(args));
 
+				let carried: CarriedOn | undefined;
 				if (replay.code !== 0) {
 					// So a resume of this halt names the parent, not whichever
 					// branch happens to sit on its commit.
 					await recordOnto(exec, treePath, step.onto);
+					carried = await carryOn(exec, treePath, { onlyIfSettled: true });
+					if (carried.kind === "refused") return carried;
+				}
+
+				if (replay.code !== 0 && carried?.kind !== "replayed") {
 					const conflicted = await conflictsIn(exec, treePath);
 					results.push({
 						branch: step.branch,
 						onto: step.onto,
 						outcome: "halted",
 						conflicted,
+						...(carried?.kind === "halted" && carried.settled
+							? { settled: carried.settled }
+							: {}),
 					});
 					// Everything above this is unreachable until the halt is
 					// settled, and saying so is the difference between a
@@ -657,6 +676,12 @@ export function createGitStacks(deps: {
 					branch: step.branch,
 					onto: step.onto,
 					outcome: "replayed",
+					...(carried?.kind === "replayed" && carried.settled
+						? { settled: carried.settled }
+						: {}),
+					...(carried?.kind === "replayed" && carried.stale
+						? { stale: carried.stale }
+						: {}),
 				});
 			}
 
