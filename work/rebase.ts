@@ -21,7 +21,7 @@
  * other kind of conflict for the one resolving it to stage.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { Exec } from "../exec/index.js";
 import { unattended } from "./unattended.js";
@@ -160,6 +160,41 @@ async function settledIn(
 	});
 }
 
+/**
+ * The file a halted replay keeps the name of what it is onto in.
+ *
+ * Git records only the commit, so a resumed halt had to guess the name back,
+ * and guessed after whichever local branch sat there. Kept inside git's own
+ * replay directory, the name lives exactly as long as the replay: git removes
+ * the directory, and everything in it, when the replay ends either way.
+ */
+const ONTO_NAME = "agentic-harness-onto";
+
+/**
+ * Note the name a halted replay was started onto, so its resumed halts can
+ * say it. Best-effort: a halt with the name unrecorded is named from the
+ * commit, as before.
+ */
+export async function recordOnto(
+	exec: Exec,
+	treePath: string,
+	onto: string,
+): Promise<void> {
+	const said = await ask(exec, treePath, [
+		"rev-parse",
+		"--git-path",
+		"rebase-merge",
+	]);
+	if (said === undefined) return;
+	const directory = isAbsolute(said) ? said : join(treePath, said);
+	if (!existsSync(directory)) return;
+	try {
+		writeFileSync(join(directory, ONTO_NAME), `${onto}\n`);
+	} catch {
+		// Unrecorded is the fallback the halt already has.
+	}
+}
+
 /** Replay with plain git. */
 export function createGitRebaser(deps: { exec: Exec }): WorkRebaser {
 	const { exec } = deps;
@@ -220,6 +255,7 @@ export function createGitRebaser(deps: { exec: Exec }): WorkRebaser {
 
 		const head = await read("head-name");
 		const onto = await read("onto");
+		const named = await read(ONTO_NAME);
 		const at = await ask(exec, treePath, [
 			"rev-parse",
 			"--short",
@@ -228,7 +264,7 @@ export function createGitRebaser(deps: { exec: Exec }): WorkRebaser {
 		return {
 			// Git records the full ref; a reader wants the branch.
 			...(head ? { branch: head.replace(/^refs\/heads\//, "") } : {}),
-			...(onto ? { onto: await nameFor(treePath, onto) } : {}),
+			...(onto ? { onto: await nameFor(treePath, onto, named) } : {}),
 			...(at ? { at } : {}),
 		};
 	}
@@ -242,14 +278,31 @@ export function createGitRebaser(deps: { exec: Exec }): WorkRebaser {
 	 * where the same halt from starting the replay said "onto main", and the two are
 	 * the same event to the person reading them.
 	 *
-	 * So the commit is named after a branch when exactly one branch is sitting on it.
-	 * Exactly one, because more than one is genuinely ambiguous: the replay was onto
-	 * some ref and nothing here records which, so picking one would be inventing the
+	 * So a replay these tools started records the name it was given (see
+	 * `recordOnto`), and that name is used, with the commit beside it once the ref
+	 * has moved on, since the replay is still onto where the ref was.
+	 *
+	 * A replay started with raw git has no name recorded, so its commit is named
+	 * after a branch when exactly one branch is sitting on it. Exactly one, because
+	 * more than one is genuinely ambiguous, and picking one would be inventing the
 	 * answer rather than reading it. The commit is the honest fallback, and it is
 	 * what git had.
 	 */
-	async function nameFor(treePath: string, commit: string): Promise<string> {
+	async function nameFor(
+		treePath: string,
+		commit: string,
+		named: string | undefined,
+	): Promise<string> {
 		const short = commit.slice(0, 8);
+		if (named !== undefined) {
+			const now = await ask(exec, treePath, [
+				"rev-parse",
+				"--verify",
+				"--quiet",
+				`${named}^{commit}`,
+			]);
+			return now === commit ? named : `${named} at ${short}`;
+		}
 		const said = await ask(exec, treePath, [
 			"for-each-ref",
 			"--format=%(refname:short)",
@@ -323,6 +376,7 @@ export function createGitRebaser(deps: { exec: Exec }): WorkRebaser {
 
 			const conflicted = await conflictedIn(exec, treePath);
 			if (conflicted.length > 0 || (await isHalted(treePath))) {
+				await recordOnto(exec, treePath, onto);
 				const at = await ask(exec, treePath, [
 					"rev-parse",
 					"--short",
