@@ -239,6 +239,21 @@ export function createTreeBroker(
 				satisfies(tree.identity, request),
 			);
 			if (reusable) {
+				// A worktree is one session's at a time: what is uncommitted in
+				// it is that session's work, and a second session writing there
+				// loses it. Reusing on identity alone once handed one stream
+				// another's half-done change. A snapshot is shareable by design,
+				// and a tree whose holders have all stopped is free to take.
+				const ours = trees.some((tree) => tree.path === reusable.path);
+				if (!reusable.identity.shareable && !ours) {
+					const others = (await memory?.otherHolders(reusable.path)) ?? [];
+					if (others.length > 0) {
+						const pids = others.map((owner) => `pid ${owner.pid}`).join(", ");
+						throw new Error(
+							`${reusable.path} is the worktree for this branch, and another running session (${pids}) is working in it. A worktree is one session's at a time, so name a different branch for this work.`,
+						);
+					}
+				}
 				const by = roster().find(
 					(provider) => provider.id === reusable.providerId,
 				);
