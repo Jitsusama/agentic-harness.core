@@ -78,6 +78,79 @@ export function githubAuthoring(exec: Exec): AuthoringFacet {
 		}
 	}
 
+	/**
+	 * The merge method to ask for when the caller named none, from the
+	 * repo's own settings.
+	 *
+	 * Leaving the method out is not neutral: GitHub reads that as a merge
+	 * commit, which a repo that forbids them refuses. So a repo that takes
+	 * merge commits is sent none, as it always was, and one that does not
+	 * gets the first way it does take, squash before rebase. Undefined
+	 * when the settings can't be read, which sends none and lets GitHub's
+	 * refusal say why.
+	 */
+	async function allowedMethod(
+		repo: RepoLocator,
+	): Promise<"squash" | "rebase" | undefined> {
+		let settings: Record<string, unknown>;
+		try {
+			settings = JSON.parse(
+				await run(
+					exec,
+					"gh",
+					["api", `repos/${slugOf(repo)}`],
+					`reading ${slugOf(repo)}'s merge settings`,
+				),
+			);
+		} catch {
+			return undefined;
+		}
+		if (settings.allow_merge_commit !== false) return undefined;
+		if (settings.allow_squash_merge === true) return "squash";
+		if (settings.allow_rebase_merge === true) return "rebase";
+		return undefined;
+	}
+
+	/**
+	 * Put a pull request in GitHub's merge queue, guarded on the head the
+	 * caller expected, the same guard the merge endpoint takes.
+	 */
+	async function enqueue(
+		ref: ChangeRef,
+		expectedHead: string | undefined,
+	): Promise<MergeOutcome> {
+		const pull = JSON.parse(
+			await run(
+				exec,
+				"gh",
+				["api", `repos/${slugOf(ref.repo)}/pulls/${ref.id}`],
+				`reading pull request ${ref.id}`,
+			),
+		) as { node_id?: unknown };
+		if (typeof pull.node_id !== "string") {
+			throw new Error(
+				`pull request ${ref.id} must go through the merge queue, and GitHub did not say its id`,
+			);
+		}
+		const guarded = expectedHead !== undefined;
+		await run(
+			exec,
+			"gh",
+			[
+				"api",
+				"graphql",
+				"-f",
+				`query=mutation($id: ID!${guarded ? ", $head: GitObjectID" : ""}) { enqueuePullRequest(input: { pullRequestId: $id${guarded ? ", expectedHeadOid: $head" : ""} }) { mergeQueueEntry { id } } }`,
+				// Raw strings, since -F would read an all-digit prefix as a number.
+				"-f",
+				`id=${pull.node_id}`,
+				...(guarded ? ["-f", `head=${expectedHead}`] : []),
+			],
+			`adding pull request ${ref.id} to the merge queue`,
+		);
+		return { kind: "enqueued", detail: "added to the merge queue" };
+	}
+
 	/** A GraphQL mutation, for the two things REST will not do. */
 	async function mutate(
 		query: string,
@@ -296,25 +369,36 @@ export function githubAuthoring(exec: Exec): AuthoringFacet {
 		},
 
 		async merge(ref: ChangeRef, request: MergeRequest): Promise<MergeOutcome> {
-			const answered = await send(
-				"PUT",
-				`repos/${slugOf(ref.repo)}/pulls/${ref.id}/merge`,
-				{
-					// Only when asked. Which merge a repo wants is its settled
-					// policy, and choosing one here would rewrite history a way
-					// the project did not pick.
-					...(request.method === undefined
-						? {}
-						: { merge_method: request.method }),
-					...(request.expectedHead === undefined
-						? {}
-						: { sha: request.expectedHead }),
-				},
-				`merging pull request ${ref.id}`,
-			);
+			const method = request.method ?? (await allowedMethod(ref.repo));
+			let answered: string;
+			try {
+				answered = await send(
+					"PUT",
+					`repos/${slugOf(ref.repo)}/pulls/${ref.id}/merge`,
+					{
+						...(method === undefined ? {} : { merge_method: method }),
+						...(request.expectedHead === undefined
+							? {}
+							: { sha: request.expectedHead }),
+					},
+					`merging pull request ${ref.id}`,
+				);
+			} catch (error) {
+				// A branch behind GitHub's merge queue refuses this endpoint, and
+				// says so in words; agents met it five times in a week and found
+				// the queue by hand. Joining it is what merging means there.
+				const said = error instanceof Error ? error.message : String(error);
+				if (/is in the merge queue/i.test(said)) {
+					return { kind: "enqueued", detail: "already in the merge queue" };
+				}
+				if (/through the merge queue/i.test(said)) {
+					return enqueue(ref, request.expectedHead);
+				}
+				throw error;
+			}
 			// This endpoint lands the change then and there, so `merged` is the
-			// honest word for it. A repo fronted by GitHub's own merge queue does
-			// not merge through here at all, which is why there is no second case.
+			// honest word for it. A queued branch never gets here: it is
+			// refused above and joins the queue instead.
 			//
 			// The sha is passed on when the answer carries one and left out when
 			// it does not, rather than being defaulted to the head we sent: absent
