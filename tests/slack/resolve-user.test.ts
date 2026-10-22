@@ -92,6 +92,44 @@ describe("resolving a person to a Slack id", () => {
 		expect(called).toContain("search.messages");
 	});
 
+	it("searches for the handle before the @, since from: never matches an address", async () => {
+		const queries: string[] = [];
+		const client = {
+			call: vi.fn(async (method: string, params: { query?: string }) => {
+				if (method === "users.lookupByEmail") throw new Error("missing_scope");
+				queries.push(params.query ?? "");
+				return {
+					messages: {
+						matches: [{ user: "W018B01UZGE", username: "nataly.sheinin" }],
+					},
+				};
+			}),
+		} as unknown as SlackClient;
+
+		expect(await resolveUser(client, "nataly.sheinin@shopify.com")).toBe(
+			"W018B01UZGE",
+		);
+		expect(queries).toEqual(["from:nataly.sheinin *"]);
+	});
+
+	it("answers an email from the handle already cached", async () => {
+		cached.set("nataly.sheinin", "W018B01UZGE");
+		const { client, called } = clientWith({}, { "users.lookupByEmail": "x" });
+
+		expect(await resolveUser(client, "nataly.sheinin@shopify.com")).toBe(
+			"W018B01UZGE",
+		);
+		expect(called).not.toContain("search.messages");
+	});
+
+	it("refuses an email it cannot place without asking for an email", async () => {
+		const { client } = clientWith({}, { "users.lookupByEmail": "x" });
+
+		await expect(
+			resolveUser(client, "bart.piotrowski@shopify.com"),
+		).rejects.toThrow(/nobody posting as @bart\.piotrowski.*user ID/s);
+	});
+
 	it("refuses a full name by naming the forms that work", async () => {
 		// `from:Chao Duan *` cannot match, so searching is not worth the call.
 		const { client, called } = clientWith({});

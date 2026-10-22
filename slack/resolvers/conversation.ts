@@ -92,6 +92,13 @@ export async function resolveConversation(
 		return openDmConversation(client, name);
 	}
 
+	// A channel name holds neither a dot nor an @, and handles and emails
+	// mostly do, so a bare name that holds one is a person: open the DM.
+	// Reading a DM by handle had failed as an unknown channel.
+	if (!input.startsWith("#") && /[.@]/.test(name)) {
+		return openDmConversation(client, await resolveUser(client, name));
+	}
+
 	// Check file cache for name → ID mapping.
 	const cachedId = lookupId(CACHE_FILE, name);
 	if (cachedId) return resolveById(client, cachedId);
@@ -122,9 +129,15 @@ export async function resolveConversation(
 		return conversation;
 	}
 
+	// A bare name that is no channel may still be a handle without a dot.
+	if (!input.startsWith("#")) {
+		const userId = await resolveUser(client, name).catch(() => undefined);
+		if (userId) return openDmConversation(client, userId);
+	}
+
 	throw new Error(
-		`Could not resolve channel "${input}". ` +
-			"Use a channel ID (e.g. C0ACMKCS6UW) or verify the channel name.",
+		`Could not resolve channel "${input}": nothing by that name was found. ` +
+			"Use a channel ID (as in C0ACMKCS6UW), or check the name.",
 	);
 }
 

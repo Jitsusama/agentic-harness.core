@@ -61,14 +61,48 @@ export async function resolveUser(
 
 	// An email is the one form that resolves somebody who has posted
 	// nothing visible. Blocked on some grids, which is not the caller's
-	// problem: fall through to the search.
+	// problem: the handle before the @ is searched for instead, since
+	// `from:` takes a handle and never matches an address. On Shopify's
+	// grid the lookup has never once answered: 1,031 cached people and
+	// not one by email, so every email had failed.
 	if (name.includes("@")) {
 		const byEmail = await lookUpByEmail(client, name, signal);
 		if (byEmail) return byEmail;
+		const handle = name.slice(0, name.indexOf("@"));
+		const id = handle
+			? (lookupId(CACHE_FILE, handle) ??
+				(await searchByHandle(client, handle, signal)))
+			: undefined;
+		if (id) {
+			cacheUser(name, id);
+			return id;
+		}
+		throw new Error(
+			`Could not resolve user "${input}": this workspace would not look the ` +
+				`address up, and nobody posting as @${handle} was found. Their handle ` +
+				"may differ or they may have left; a user ID (as in U0123ABC) always works.",
+		);
 	}
 
-	// Resolve via search. Enterprise grids block users.list,
-	// but search.messages with from:username works.
+	const id = await searchByHandle(client, name, signal);
+	if (id) return id;
+
+	throw new Error(
+		`Could not resolve user "${input}": nobody posting as @${name} was found. ` +
+			"Use their email address or a user ID (as in U0123ABC), or check the handle.",
+	);
+}
+
+/**
+ * The user who posts as `handle`, from a search for one of their messages,
+ * or undefined when the searcher can see none. Enterprise grids block
+ * users.list, but search.messages with `from:handle` works.
+ */
+async function searchByHandle(
+	client: SlackClient,
+	handle: string,
+	signal?: AbortSignal,
+): Promise<string | undefined> {
 	const response = await client.call<{
 		messages: {
 			matches: Array<{
@@ -76,18 +110,12 @@ export async function resolveUser(
 				username: string;
 			}>;
 		};
-	}>("search.messages", { query: `from:${name} *`, count: 1 }, signal);
+	}>("search.messages", { query: `from:${handle} *`, count: 1 }, signal);
 
 	const match = response.messages?.matches?.[0];
-	if (match?.user && match?.username) {
-		cacheUser(match.username, match.user);
-		return match.user;
-	}
-
-	throw new Error(
-		`Could not resolve user "${input}". ` +
-			"Use their email address, a user ID (e.g. U0123ABC), or verify the handle.",
-	);
+	if (!match?.user || !match?.username) return undefined;
+	cacheUser(match.username, match.user);
+	return match.user;
 }
 
 /**
