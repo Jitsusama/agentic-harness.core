@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	complaintsAbout,
 	validate,
+	wrapBody,
 } from "../../../internal/guardian/commit-format.js";
 
 const GOOD = "feat(work): record a commit through the tool";
@@ -79,5 +80,48 @@ describe("what it says to a caller with no panel", () => {
 
 		expect(said).toContain("type(scope): subject");
 		expect(said).not.toMatch(/\bskill\b/i);
+	});
+});
+
+describe("wrapping a body", () => {
+	const longest = (text: string) =>
+		Math.max(...text.split("\n").map((line) => line.length));
+	const sentence =
+		"The broker refused a branch it had not seen, so every new piece of work began with a failed call and a retry.";
+
+	it("rewraps a paragraph whose lines run past 72", () => {
+		const wrapped = wrapBody(`${sentence} ${sentence}`);
+		expect(longest(wrapped)).toBeLessThanOrEqual(72);
+		expect(wrapped.replace(/\n/g, " ")).toBe(`${sentence} ${sentence}`);
+		expect(complaintsAbout(`fix(work): x\n\n${wrapped}`)).toEqual([]);
+	});
+
+	it("leaves a paragraph that already fits exactly as it was", () => {
+		const short = "Short line one.\nShort line two.";
+		expect(wrapBody(short)).toBe(short);
+	});
+
+	it("keeps paragraphs apart", () => {
+		const wrapped = wrapBody(`${sentence}\n\nSecond.`);
+		expect(wrapped.split("\n\n")).toHaveLength(2);
+		expect(wrapped.endsWith("\n\nSecond.")).toBe(true);
+	});
+
+	it("wraps a list item under its own text", () => {
+		const wrapped = wrapBody(`- ${sentence}\n- Next.`);
+		const lines = wrapped.split("\n");
+		expect(longest(wrapped)).toBeLessThanOrEqual(72);
+		expect(lines[0]?.startsWith("- The broker")).toBe(true);
+		expect(lines[1]?.startsWith("  ")).toBe(true);
+		expect(lines.at(-1)).toBe("- Next.");
+	});
+
+	it("leaves code, indented lines and an unbreakable word alone", () => {
+		const url = `https://example.com/${"a".repeat(80)}`;
+		const code = `\`\`\`\n${"x".repeat(90)} ${"y".repeat(5)}\n\`\`\``;
+		const indented = `    ${sentence}`;
+		for (const text of [url, code, indented]) {
+			expect(wrapBody(text)).toBe(text);
+		}
 	});
 });

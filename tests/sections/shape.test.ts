@@ -144,6 +144,12 @@ describe("detectShapeViolations", () => {
 		expect(runOn?.excerpt).toMatch(/^The tool word/);
 	});
 
+	it("ends a sentence before one that opens with a lowercase name", () => {
+		const half = words(25);
+		const two = `The board ${half} now. niri draws ${half} again.`;
+		expect(rules(body({ [SOLUTION]: two }))).not.toContain("sentenceWords");
+	});
+
 	it("treats a semicolon chain as one sentence", () => {
 		const half = words(25);
 		expect(rules(body({ [VALIDATION]: `${half}; ${half}.` }))).toContain(
@@ -204,5 +210,17 @@ describe("formatShapeBlock", () => {
 		expect(message).toContain(`${limit + 5} words`);
 		expect(message).toContain(String(limit));
 		expect(message).toContain("github-pr-format");
+	});
+
+	it("says how many words to cut", () => {
+		const limit = PR_SHAPE.sections[SOLUTION]?.words ?? 0;
+		const sentences = Array.from({ length: limit / 20 }, () => `${words(20)}.`);
+		const solution = `${sentences.join(" ")} Three more words.`;
+		const message = formatShapeBlock(
+			detectShapeViolations(body({ [SOLUTION]: solution }), PR_SHAPE),
+			"pull request",
+			"github-pr-format",
+		);
+		expect(message).toMatch(/cut 3 words/i);
 	});
 });

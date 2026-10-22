@@ -262,7 +262,9 @@ function absoluteIn(
  * plus what a command creates without a redirect (see `createdBy`), read
  * through wrappers such as `nohup` and `env`. A file-descriptor redirect
  * (`2>`, `&>`) is skipped, matching what the pattern pass does, since it
- * routes a stream rather than naming a content target.
+ * routes a stream rather than naming a content target. An input redirect
+ * (`<`) is skipped too: it names a file the command reads, and counting
+ * it as a write refused plain reads such as `wc -c < notes.md` in build.
  *
  * An editor's script is told apart from its files by reading its options
  * the way the editor does, since a script reported as a file is a path
@@ -275,6 +277,7 @@ function commandTargets(simple: SimpleCommand): string[] {
 	for (const redirect of simple.redirects) {
 		if (!redirect.target) continue;
 		if (/^[0-9&]/.test(redirect.operator)) continue;
+		if (!redirect.operator.includes(">")) continue;
 		found.push(unquote(redirect.target.text));
 	}
 

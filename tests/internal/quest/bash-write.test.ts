@@ -17,6 +17,14 @@ describe("resolveBashWrites", () => {
 		});
 	});
 
+	it("places nothing for a command that only reads through a redirect", () => {
+		expect(resolveBashWrites("wc -l < /etc/hosts", where)).toEqual({
+			paths: [],
+			removed: [],
+			unresolved: [],
+		});
+	});
+
 	it("places a target in the session directory when nothing moved it", () => {
 		expect(resolveBashWrites("echo x > notes.md", where).paths).toEqual([
 			"/session/notes.md",
@@ -261,6 +269,17 @@ describe("bashWriteTargets", () => {
 
 	it("returns empty when there is no parseable write target", () => {
 		expect(bashWriteTargets("ls -la")).toEqual([]);
+	});
+
+	it("does not read an input redirect as a write", () => {
+		expect(bashWriteTargets("tr a b < /proc/1/environ")).toEqual([]);
+		expect(bashWriteTargets('d=notes.md; wc -c < "$d"')).toEqual([]);
+		expect(bashWriteTargets("sort <input.txt")).toEqual([]);
+	});
+
+	it("still reads the output redirect beside an input one", () => {
+		expect(bashWriteTargets("sort < in.txt > out.txt")).toEqual(["out.txt"]);
+		expect(bashWriteTargets("cat < in.txt | tee f.log")).toEqual(["f.log"]);
 	});
 });
 

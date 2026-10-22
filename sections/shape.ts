@@ -163,6 +163,12 @@ export function countWords(text: string): number {
  * its dot, and a paragraph break or a new list item always ends one.
  * A semicolon does not: a chain of clauses joined by semicolons reads
  * as one long sentence, and is measured as one.
+ *
+ * What follows a stop may start lowercase. A sentence opening with a
+ * tool or identifier (`niri`, `core`) is still a new sentence, and
+ * reading it as part of the one before refused descriptions for a run-on
+ * nobody wrote. The abbreviations above have lost their stop by now, so
+ * they cannot end one.
  */
 export function sentencesOf(text: string): string[] {
 	const prose = text
@@ -172,7 +178,7 @@ export function sentencesOf(text: string): string[] {
 	return prose
 		.split(/\n\s*\n|\n(?=\s*(?:[-*+]|\d+\.)\s)/)
 		.flatMap((chunk) =>
-			chunk.split(/(?<=[.!?]["')\]]?)\s+(?=["'([]?[\p{Lu}\p{N}])/u),
+			chunk.split(/(?<=[.!?]["')\]]?)\s+(?=["'([]?[\p{L}\p{N}])/u),
 		)
 		.map((s) => s.replace(/\s+/g, " ").trim())
 		.filter((s) => countWords(s) > 0);
