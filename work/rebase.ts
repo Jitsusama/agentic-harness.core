@@ -12,6 +12,13 @@
  * is work only a person or an agent reading the code can do, and abandoning
  * throws away whatever replaying had achieved so far. Both are refusals to
  * guess rather than missing features.
+ *
+ * What resuming does take on is git's bookkeeping. A conflict is settled by
+ * editing the file, and git also wants it added before it will carry on, a
+ * step these tools give no way to take: a file edited clean but never added
+ * halted resume again and again, until the agent left for raw git. So resume
+ * stages a file that is plainly settled (see `settledIn`), and leaves every
+ * other kind of conflict for the one resolving it to stage.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -90,6 +97,67 @@ async function conflictedIn(
 		"--diff-filter=U",
 	]);
 	return said === undefined ? [] : said.split("\n").filter((one) => one !== "");
+}
+
+/** A conflict marker git writes at the start of a line; `=======` alone is a heading underline too. */
+const MARKER = /^(?:<{7}|>{7}|\|{7})(?:[ \t]|$)/m;
+
+/** How far into a file git looks for a NUL to call it binary. */
+const BINARY_SNIFF = 8000;
+
+/**
+ * Which of these unmerged paths are plainly settled in the working tree.
+ *
+ * Plainly means a text file both sides changed, which is the one conflict
+ * git writes markers into, with every marker gone. Anything else has no
+ * marker to remove, so its file says nothing about whether anyone settled
+ * it: a binary file holds one side's bytes untouched, and when one side
+ * deleted or added the file, what is left is one side's version as git
+ * left it. Staging any of those would choose a side nobody chose. A file
+ * removed from the tree is left too, since removing it is a choice to
+ * make with git rather than one to read off the disk.
+ */
+async function settledIn(
+	exec: Exec,
+	treePath: string,
+	conflicted: readonly string[],
+): Promise<readonly string[]> {
+	if (conflicted.length === 0) return [];
+	const top = await ask(exec, treePath, ["rev-parse", "--show-toplevel"]);
+	const listed = await exec("git", [
+		"-C",
+		treePath,
+		"ls-files",
+		"-u",
+		"-z",
+		"--full-name",
+		"--",
+		":(top)",
+	]);
+	if (top === undefined || listed.code !== 0) return [];
+
+	// Each entry is `mode object stage\tpath`; stages 2 and 3 are the two sides.
+	const sides = new Map<string, Set<string>>();
+	for (const entry of listed.stdout.split("\0")) {
+		const tab = entry.indexOf("\t");
+		if (tab < 0) continue;
+		const stage = entry.slice(0, tab).split(" ")[2] ?? "";
+		const path = entry.slice(tab + 1);
+		sides.set(path, (sides.get(path) ?? new Set()).add(stage));
+	}
+
+	return conflicted.filter((path) => {
+		const stages = sides.get(path);
+		if (!stages?.has("2") || !stages.has("3")) return false;
+		let content: Buffer;
+		try {
+			content = readFileSync(join(top, path));
+		} catch {
+			return false;
+		}
+		if (content.subarray(0, BINARY_SNIFF).includes(0)) return false;
+		return !MARKER.test(content.toString("utf8"));
+	});
 }
 
 /** Replay with plain git. */
@@ -285,7 +353,25 @@ export function createGitRebaser(deps: { exec: Exec }): WorkRebaser {
 					reason: "No replay is part-way through in this tree.",
 				};
 			}
-			const left = await conflictedIn(exec, treePath);
+			const conflicted = await conflictedIn(exec, treePath);
+			const settled = await settledIn(exec, treePath, conflicted);
+			if (settled.length > 0) {
+				const added = await exec("git", [
+					"-C",
+					treePath,
+					"add",
+					"--",
+					...settled.map((path) => `:(top,literal)${path}`),
+				]);
+				if (added.code !== 0) {
+					return {
+						kind: "refused",
+						reason: added.stderr.trim() || `git add exited ${added.code}`,
+					};
+				}
+			}
+			const left =
+				settled.length > 0 ? await conflictedIn(exec, treePath) : conflicted;
 			if (left.length > 0) {
 				return {
 					kind: "halted",
