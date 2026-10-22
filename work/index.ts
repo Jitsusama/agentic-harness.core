@@ -13,6 +13,7 @@
  * forge-shaped question.
  */
 
+export type { Renumbered, SettledFile, StaleCitation } from "./appends.js";
 export type {
 	AskedRepo,
 	TreeAsk,
@@ -71,6 +72,7 @@ export { createGitPublisher } from "./publish.js";
 export type {
 	RebaseOutcome,
 	ResumeOutcome,
+	Settling,
 	WorkRebaser,
 } from "./rebase.js";
 export { createGitRebaser } from "./rebase.js";
