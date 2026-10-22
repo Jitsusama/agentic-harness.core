@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { createGitPublisher } from "../../work/publish.js";
+import { createGitPublisher, refspecCovers } from "../../work/publish.js";
 import { fakeExec } from "../support/fake-exec.js";
 
 const TREE = "/trees/topic";
@@ -89,6 +89,30 @@ describe("publishing a branch", () => {
 		for (const call of calls) {
 			expect(call.args.slice(0, 2)).toEqual(["-C", TREE]);
 		}
+	});
+});
+
+describe("whether a fetch refspec brings a branch in", () => {
+	it("reads a pattern, a single ref and a forced one alike", () => {
+		const topic = "refs/heads/jg/topic";
+		expect(refspecCovers("+refs/heads/*:refs/remotes/origin/*", topic)).toBe(
+			true,
+		);
+		expect(
+			refspecCovers("refs/heads/jg/*:refs/remotes/origin/jg/*", topic),
+		).toBe(true);
+		expect(refspecCovers(`+${topic}:refs/remotes/origin/jg/topic`, topic)).toBe(
+			true,
+		);
+	});
+
+	it("is false for another branch and for a refspec that leaves refs out", () => {
+		const topic = "refs/heads/jg/topic";
+		expect(
+			refspecCovers("+refs/heads/main:refs/remotes/origin/main", topic),
+		).toBe(false);
+		expect(refspecCovers("^refs/heads/jg/*", topic)).toBe(false);
+		expect(refspecCovers("", topic)).toBe(false);
 	});
 });
 

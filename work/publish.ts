@@ -8,7 +8,8 @@
  *
  * Two rules are built in rather than offered. A first push sets upstream,
  * because a branch that pushes without one has to be told its own name every
- * time afterwards and eventually gets told the wrong one. And a force is
+ * time afterwards and eventually gets told the wrong one; a branch that
+ * tracks the branch it was cut from counts as having none. And a force is
  * always a lease: `--force` overwrites whatever arrived while you were
  * rebasing, which on a shared branch is somebody else's work, and the honest
  * version of "I know what is there" is to say what you think is there and be
@@ -72,6 +73,89 @@ async function ask(
 	return said === "" ? undefined : said;
 }
 
+/** Whether one fetch refspec brings a remote's ref in. */
+export function refspecCovers(refspec: string, ref: string): boolean {
+	const spec = refspec.trim().replace(/^\+/, "");
+	// A negative refspec leaves refs out rather than bringing them in.
+	if (spec.startsWith("^")) return false;
+	const source = spec.split(":")[0] ?? "";
+	const star = source.indexOf("*");
+	if (star === -1) return source === ref;
+	const before = source.slice(0, star);
+	const after = source.slice(star + 1);
+	return (
+		ref.length >= before.length + after.length &&
+		ref.startsWith(before) &&
+		ref.endsWith(after)
+	);
+}
+
+/**
+ * Have the remote's fetch bring the branch in, when it does not yet.
+ *
+ * Git keeps a branch's tracking ref, resolves its upstream and works out
+ * a lease only through the remote's fetch refspec. A checkout whose fetch
+ * is narrowed to a few branches, as monorepo checkouts often are, left a
+ * published branch with none of the three, so every later lease was
+ * refused as stale, saying the remote had moved when nothing had. This
+ * is what `git remote set-branches --add` is for, and it adds one branch,
+ * the one being published, so the checkout stays narrow.
+ */
+async function fetchesBranch(
+	exec: Exec,
+	treePath: string,
+	remote: string,
+	branch: string,
+): Promise<void> {
+	const listed = await exec("git", [
+		"-C",
+		treePath,
+		"config",
+		"--get-all",
+		`remote.${remote}.fetch`,
+	]);
+	const refspecs = listed.code === 0 ? listed.stdout.split("\n") : [];
+	const ref = `refs/heads/${branch}`;
+	if (refspecs.some((refspec) => refspecCovers(refspec, ref))) return;
+	await exec("git", [
+		"-C",
+		treePath,
+		"remote",
+		"set-branches",
+		"--add",
+		remote,
+		branch,
+	]);
+}
+
+/**
+ * Record what the remote now holds of a branch, as its tracking ref.
+ *
+ * A push writes it where the fetch covers the branch, but a push that
+ * found the remote already there writes nothing, and a branch whose
+ * fetch was only just added then had no tracking ref until the next
+ * fetch. After a push that succeeded the remote holds exactly what was
+ * pushed, so this writes no guess.
+ */
+async function recordRemote(
+	exec: Exec,
+	treePath: string,
+	remote: string,
+	branch: string,
+	pushed: string | undefined,
+): Promise<void> {
+	if (pushed === undefined) return;
+	const ref = `refs/remotes/${remote}/${branch}`;
+	const recorded = await ask(exec, treePath, [
+		"rev-parse",
+		"--verify",
+		"-q",
+		ref,
+	]);
+	if (recorded === pushed) return;
+	await exec("git", ["-C", treePath, "update-ref", ref, pushed]);
+}
+
 /** Publish with plain git. */
 export function createGitPublisher(deps: { exec: Exec }): WorkPublisher {
 	const { exec } = deps;
@@ -99,7 +183,11 @@ export function createGitPublisher(deps: { exec: Exec }): WorkPublisher {
 				"--abbrev-ref",
 				`${branch}@{upstream}`,
 			]);
-			const tracked = upstream !== undefined;
+			// Tracked means tracking a branch of its own name. A branch cut from
+			// `origin/main` starts out tracking main, and kept doing so after it
+			// was published, so its status, its ahead and behind, and anything
+			// reading its upstream all answered about main.
+			const tracked = upstream?.endsWith(`/${branch}`) === true;
 			const remote =
 				options.remote ?? upstream?.split("/")[0] ?? DEFAULT_REMOTE;
 
@@ -111,6 +199,16 @@ export function createGitPublisher(deps: { exec: Exec }): WorkPublisher {
 					reason: `This tree has no remote called ${remote}${known === undefined ? " and no remotes at all" : `, only ${known.split("\n").join(", ")}`}, so ${branch} has nowhere to go.`,
 				};
 			}
+
+			await fetchesBranch(exec, treePath, remote, branch);
+
+			// What is pushed, read now, so what the remote holds afterwards is
+			// known rather than asked for again.
+			const pushing = await ask(exec, treePath, [
+				"rev-parse",
+				"--verify",
+				`refs/heads/${branch}`,
+			]);
 
 			const args = ["-C", treePath, "push"];
 			// Lease, never bare force. The lease is what turns "overwrite it"
@@ -175,6 +273,7 @@ export function createGitPublisher(deps: { exec: Exec }): WorkPublisher {
 			// is the difference between a push that did something and one that
 			// politely did nothing.
 			const said = `${result.stdout}\n${result.stderr}`;
+			await recordRemote(exec, treePath, remote, branch, pushing);
 			if (said.includes("Everything up-to-date")) {
 				return { kind: "already-there", branch, remote };
 			}
