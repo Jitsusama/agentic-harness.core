@@ -28,7 +28,7 @@
  *
  * Rewriting one commit's citation can change the line a later commit's change
  * sits beside, and git then halts that commit though it disagrees with nothing
- * anyone wrote. Such a conflict is recognised exactly, its landed side being
+ * anyone wrote. Such a conflict is recognized exactly, its landed side being
  * the base with the moves applied, and settled the same way. A file that is
  * still in conflict is never rewritten, since staging it would mark it settled.
  */
