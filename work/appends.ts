@@ -25,6 +25,12 @@
  * its own entry. Lines added by the branch's other commits cannot be rewritten
  * mid-replay, so once the replay ends any still citing an old number are
  * named rather than left to be found.
+ *
+ * Rewriting one commit's citation can change the line a later commit's change
+ * sits beside, and git then halts that commit though it disagrees with nothing
+ * anyone wrote. Such a conflict is recognized exactly, its landed side being
+ * the base with the moves applied, and settled the same way. A file that is
+ * still in conflict is never rewritten, since staging it would mark it settled.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -318,6 +324,39 @@ export function recite(
 	});
 }
 
+/**
+ * Settle a conflict the replay made itself, or answer undefined.
+ *
+ * Rewriting a halted commit's citation changes the line a later commit's
+ * change sits beside, so git no longer applies that commit, though it
+ * disagrees with nothing anyone wrote. Such a conflict is known by its
+ * landed side being exactly the base with the moves applied: then the
+ * replayed side, with the same moves applied, is what the commit meant.
+ * Any other difference on the landed side is someone's work, and declines.
+ */
+export function reciteConflicts(
+	pieces: readonly Piece[],
+	moves: readonly Move[],
+	path: string,
+): string[] | undefined {
+	if (!pieces.some((piece) => piece.kind === "conflict")) return undefined;
+	const lines: string[] = [];
+	for (const piece of pieces) {
+		if (piece.kind === "same") {
+			lines.push(...piece.lines);
+			continue;
+		}
+		const expected = piece.base.map((line) => recite(line, moves, path));
+		if (
+			expected.length !== piece.ours.length ||
+			expected.some((line, index) => line !== piece.ours[index])
+		)
+			return undefined;
+		lines.push(...piece.theirs.map((line) => recite(line, moves, path)));
+	}
+	return lines;
+}
+
 /** Lines a diff added, by file, with their line numbers in the new side. */
 export function addedLines(
 	diff: string,
@@ -388,16 +427,17 @@ async function git(
 const GIT_MARKER = /^(?:<{7}|>{7}|\|{7})(?:[ \t]|$)/m;
 
 /**
- * Markdown paths unmerged with all three stages, from the top of the tree,
- * whose working copy still holds git's markers. One without them has been
- * edited by whoever is settling it, and recomputing it would throw their
- * edit away.
+ * Every path a halt left unmerged, from the top of the tree, and of those the
+ * ones with all three stages whose working copy still holds git's markers.
+ * One without them has been edited by whoever is settling it, and
+ * recomputing it would throw their edit away. Undefined when git will not
+ * say, since then no file can be known safe to rewrite.
  */
-async function appendable(
+async function unmerged(
 	exec: Exec,
 	treePath: string,
 	top: string,
-): Promise<string[]> {
+): Promise<{ every: Set<string>; marked: string[] } | undefined> {
 	const listed = await git(exec, treePath, [
 		"ls-files",
 		"-u",
@@ -406,7 +446,7 @@ async function appendable(
 		"--",
 		":(top)",
 	]);
-	if (listed === undefined) return [];
+	if (listed === undefined) return undefined;
 	const stages = new Map<string, Set<string>>();
 	for (const entry of listed.split("\0")) {
 		const tab = entry.indexOf("\t");
@@ -415,11 +455,8 @@ async function appendable(
 		const path = entry.slice(tab + 1);
 		stages.set(path, (stages.get(path) ?? new Set()).add(stage));
 	}
-	return [...stages]
-		.filter(
-			([path, have]) =>
-				/\.md$/i.test(path) && have.has("1") && have.has("2") && have.has("3"),
-		)
+	const marked = [...stages]
+		.filter(([, have]) => have.has("1") && have.has("2") && have.has("3"))
 		.map(([path]) => path)
 		.filter((path) => {
 			try {
@@ -428,25 +465,52 @@ async function appendable(
 				return false;
 			}
 		});
+	return { every: new Set(stages.keys()), marked };
 }
 
 /**
  * Settle every conflicted Markdown file in a halted replay whose conflicts
  * are all additions on both sides, staging each one, and rewrite the halted
- * commit's own citations of any entry that moved. Answers what it settled,
- * which is nothing when no file qualifies, and never fails the halt: a file
- * it cannot read or write is left conflicted, as git left it.
+ * commit's own citations of any entry that moved, in this halt or an earlier
+ * one of the same replay (`earlier`). A conflict that rewriting made itself
+ * is settled too, and named in `recited`. Answers what it settled, which is
+ * nothing when no file qualifies, and never fails the halt: a file it cannot
+ * read or write is left conflicted, as git left it, and a file still
+ * conflicted is never rewritten.
  */
 export async function settleAdditions(
 	exec: Exec,
 	treePath: string,
-): Promise<{ settled: SettledFile[]; moves: Move[] }> {
+	earlier: readonly Move[] = [],
+): Promise<{ settled: SettledFile[]; moves: Move[]; recited: string[] }> {
 	const settled: SettledFile[] = [];
 	const moves: Move[] = [];
+	const recited: string[] = [];
 	const top = (
 		await git(exec, treePath, ["rev-parse", "--show-toplevel"])
 	)?.trim();
-	if (!top) return { settled, moves };
+	if (!top) return { settled, moves, recited };
+	const open = await unmerged(exec, treePath, top);
+	if (open === undefined) return { settled, moves, recited };
+
+	// In a replay, stage 2 is what has landed and stage 3 the commit replayed.
+	const merge = async (path: string, style: "--zdiff3" | "--diff3") => {
+		const merged = await exec("git", [
+			"-C",
+			treePath,
+			"merge-file",
+			"-p",
+			style,
+			`--marker-size=${MARKER_SIZE}`,
+			"--object-id",
+			`:2:${path}`,
+			`:1:${path}`,
+			`:3:${path}`,
+		]);
+		// The exit is the count of conflicts, capped at 127; above that, an error.
+		if (merged.code < 0 || merged.code > 127) return undefined;
+		return readMerge(merged.stdout);
+	};
 
 	const joined: {
 		path: string;
@@ -455,33 +519,39 @@ export async function settleAdditions(
 		hunks: number;
 		moves: Move[];
 	}[] = [];
-	for (const path of await appendable(exec, treePath, top)) {
-		// In a replay, stage 2 is what has landed and stage 3 the commit replayed.
-		const merged = await exec("git", [
-			"-C",
-			treePath,
-			"merge-file",
-			"-p",
-			"--zdiff3",
-			`--marker-size=${MARKER_SIZE}`,
-			"--object-id",
-			`:2:${path}`,
-			`:1:${path}`,
-			`:3:${path}`,
-		]);
-		// The exit is the count of conflicts, capped at 127; above that, an error.
-		if (merged.code < 0 || merged.code > 127) continue;
-		const pieces = readMerge(merged.stdout);
+	for (const path of open.marked.filter((one) => /\.md$/i.test(one))) {
+		// zdiff3 moves lines both sides share out of each conflict, so a pure
+		// addition reads as one with an empty base.
+		const pieces = await merge(path, "--zdiff3");
 		const both = pieces && joinAdditions(pieces, path);
 		if (!both) continue;
 		joined.push({ path, ...both });
 		moves.push(...both.moves);
 	}
-	if (joined.length === 0) return { settled, moves };
+	const every = [...earlier, ...moves];
+
+	// Conflicts an earlier halt's rewriting made, in any file. Read as plain
+	// diff3, so each conflict's base is exactly the lines the landed side
+	// replaced, which is what the check compares.
+	const reconciled: { path: string; lines: string[] }[] = [];
+	if (earlier.length > 0) {
+		for (const path of open.marked) {
+			if (joined.some((one) => one.path === path)) continue;
+			const pieces = await merge(path, "--diff3");
+			const lines = pieces && reciteConflicts(pieces, earlier, path);
+			if (!lines) continue;
+			reconciled.push({
+				path,
+				lines: lines.map((line) => recite(line, moves, path)),
+			});
+		}
+	}
+	if (joined.length === 0 && reconciled.length === 0 && every.length === 0)
+		return { settled, moves, recited };
 
 	// What the halted commit added, so only its own citations are rewritten.
 	const added =
-		moves.length === 0
+		every.length === 0
 			? new Map<string, { line: number; text: string }[]>()
 			: addedLines(
 					(await git(exec, treePath, [
@@ -503,10 +573,10 @@ export async function settleAdditions(
 		const mine = addedBy(file.path);
 		const lines = file.lines.map((line, index) => {
 			// The landed side's lines are never rewritten: its numbers are its own.
-			if (moves.length === 0) return line;
+			if (every.length === 0) return line;
 			const bare = line.replace(/\r?\n$/, "");
 			if (!file.theirs.has(index) && !mine.has(bare)) return line;
-			return recite(line, moves, file.path);
+			return recite(line, every, file.path);
 		});
 		try {
 			writeFileSync(join(top, file.path), lines.join(""));
@@ -515,12 +585,22 @@ export async function settleAdditions(
 		}
 		written.push(file.path);
 	}
+	const fixed: string[] = [];
+	for (const file of reconciled) {
+		try {
+			writeFileSync(join(top, file.path), file.lines.join(""));
+		} catch {
+			continue;
+		}
+		fixed.push(file.path);
+	}
 
-	// The halted commit's other files, where it cites what moved.
+	// The halted commit's other files, where it cites what moved. A file still
+	// unmerged is never touched: staging it would mark its conflict settled.
 	const cited: string[] = [];
-	if (moves.length > 0) {
+	if (every.length > 0) {
 		for (const [file, lines] of added) {
-			if (joined.some((one) => one.path === file)) continue;
+			if (open.every.has(file)) continue;
 			const mine = new Set(lines.map(({ text }) => text));
 			let content: string;
 			try {
@@ -532,7 +612,7 @@ export async function settleAdditions(
 			const rewritten = linesOf(content)
 				.map((line) =>
 					mine.has(line.replace(/\r?\n$/, ""))
-						? recite(line, moves, file)
+						? recite(line, every, file)
 						: line,
 				)
 				.join("");
@@ -546,8 +626,8 @@ export async function settleAdditions(
 		}
 	}
 
-	const staged = [...written, ...cited];
-	if (staged.length === 0) return { settled, moves: [] };
+	const staged = [...written, ...fixed, ...cited];
+	if (staged.length === 0) return { settled, moves: [], recited };
 	const add = await exec("git", [
 		"-C",
 		treePath,
@@ -555,7 +635,7 @@ export async function settleAdditions(
 		"--",
 		...staged.map((path) => `:(top,literal)${path}`),
 	]);
-	if (add.code !== 0) return { settled, moves: [] };
+	if (add.code !== 0) return { settled, moves: [], recited };
 
 	for (const file of joined.filter((one) => written.includes(one.path))) {
 		settled.push({
@@ -568,8 +648,13 @@ export async function settleAdditions(
 			cited: file.moves.length > 0 ? cited : [],
 		});
 	}
+	// Citations rewritten for an earlier halt's moves have no file of this
+	// halt to be said under, so they are said on their own.
+	const saidUnder = settled.some((file) => file.renumbered.length > 0);
+	recited.push(...fixed, ...(saidUnder ? [] : cited));
 	return {
 		settled,
 		moves: moves.filter((move) => written.includes(move.path)),
+		recited,
 	};
 }
