@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { RepoLocator } from "../../review/index.js";
-import { createTreeBroker, type TreeProvider } from "../../work/broker.js";
-import type { TreeRequest } from "../../work/tree.js";
+import {
+	createTreeBroker,
+	type HeldTree,
+	type TreeProvider,
+} from "../../work/broker.js";
+import type { TreeMemory } from "../../work/memory.js";
+import { type TreeRequest, treeIdentity } from "../../work/tree.js";
 
 const world: RepoLocator = { key: "github:Shopify/world" };
 const elsewhere: RepoLocator = { key: "github:Jitsusama/other" };
@@ -35,6 +40,83 @@ function fakeProvider(
 	};
 	return { provider, cuts, released };
 }
+
+const worktree = (branch: string): TreeRequest => ({
+	intent: "worktree",
+	repo: world,
+	purpose: branch,
+	branch,
+});
+
+/** A memory holding one remembered tree, with whoever else holds it. */
+function remembering(held: HeldTree, others: number[]): TreeMemory {
+	const owners = others.map((pid) => ({ pid, startedAt: 1 }));
+	return {
+		remember: () => {},
+		rememberHeldByUs: async () => {},
+		forget: () => {},
+		recall: () => [held],
+		heldNow: async () => [held],
+		unattributed: () => [],
+		otherHolders: async (path) => (path === held.path ? owners : []),
+		forgetUsAsHolder: async () => {},
+	};
+}
+
+describe("a worktree somebody else is working in", () => {
+	const request = worktree("topic");
+	const theirs: HeldTree = {
+		identity: treeIdentity(request),
+		path: "/trees/theirs",
+		providerId: "git-worktree",
+	};
+
+	it("is refused while another running session holds it", async () => {
+		// A worktree is one session's: its uncommitted work is that
+		// session's, and a second one writing there loses it. Handing it
+		// over once gave one stream another's half-done change.
+		const { provider, cuts } = fakeProvider("git-worktree");
+		const broker = createTreeBroker({
+			providers: [provider],
+			memory: remembering(theirs, [4242]),
+		});
+
+		await expect(broker.ensure(request)).rejects.toThrow(
+			/\/trees\/theirs.*pid 4242.*different branch/s,
+		);
+		expect(cuts).toHaveLength(0);
+	});
+
+	it("is taken over once nobody running holds it", async () => {
+		const { provider } = fakeProvider("git-worktree");
+		const broker = createTreeBroker({
+			providers: [provider],
+			memory: remembering(theirs, []),
+		});
+
+		const held = await broker.ensure(request);
+
+		expect(held.path).toBe("/trees/theirs");
+	});
+
+	it("does not stop a snapshot being shared", async () => {
+		const commit = snapshot("abc123");
+		const shared: HeldTree = {
+			identity: treeIdentity(commit),
+			path: "/trees/shared",
+			providerId: "git-worktree",
+		};
+		const { provider } = fakeProvider("git-worktree");
+		const broker = createTreeBroker({
+			providers: [provider],
+			memory: remembering(shared, [4242]),
+		});
+
+		const held = await broker.ensure(commit);
+
+		expect(held.path).toBe("/trees/shared");
+	});
+});
 
 describe("createTreeBroker", () => {
 	it("cuts a tree through the provider that serves the repo", async () => {
