@@ -21,7 +21,9 @@ const snapshot = (repo = checkedOut): TreeRequest => ({
 	purpose: "Shopify/world#42",
 	commit: "abc123",
 });
-const worktree = (repo = checkedOut): TreeRequest => ({
+const worktree = (
+	repo = checkedOut,
+): Extract<TreeRequest, { intent: "worktree" }> => ({
 	intent: "worktree",
 	repo,
 	purpose: "fix-the-thing",
@@ -37,6 +39,16 @@ const worktree = (repo = checkedOut): TreeRequest => ({
  */
 const ok = [
 	{ when: ["rev-parse", "HEAD"], code: 128, stderr: "not a git repository" },
+	{ when: ["--verify", "refs/heads/"], stdout: "abc123\n" },
+	{ when: ["cat-file"], stdout: "" },
+	{ when: ["worktree"], stdout: "" },
+];
+
+/** A repo where the branch asked for is on neither side yet. */
+const fresh = [
+	{ when: ["rev-parse", "HEAD"], code: 128, stderr: "not a git repository" },
+	{ when: ["--verify"], code: 1 },
+	{ when: ["symbolic-ref"], stdout: "refs/remotes/origin/main\n" },
 	{ when: ["worktree"], stdout: "" },
 ];
 
@@ -89,6 +101,93 @@ describe("createGitTreeProvider", () => {
 			path,
 			"fix/thing",
 		]);
+	});
+
+	it("makes a branch nobody has yet from the remote's default, tracking nothing", async () => {
+		// `worktree add <path> <branch>` needs the branch to exist, so every
+		// new piece of work began with `invalid reference` and a retry.
+		// Tracking origin's default would make a later lease compare the
+		// branch against main.
+		const { exec, calls } = fakeExec(fresh);
+		const provider = createGitTreeProvider({ exec, stateDir: "/state" });
+
+		const { path } = await provider.ensure(worktree());
+
+		expect(addition(calls)?.args).toEqual([
+			"-C",
+			"/src/world",
+			"worktree",
+			"add",
+			"--no-track",
+			"-b",
+			"fix/thing",
+			path,
+			"origin/main",
+		]);
+	});
+
+	it("makes the new branch from the base it was asked for", async () => {
+		const { exec, calls } = fakeExec(fresh);
+		const provider = createGitTreeProvider({ exec, stateDir: "/state" });
+
+		await provider.ensure({ ...worktree(), baseBranch: "release" });
+
+		expect(addition(calls)?.args.at(-1)).toBe("release");
+	});
+
+	it("follows the remote's branch when only the remote has it", async () => {
+		const { exec, calls } = fakeExec([
+			{ when: ["rev-parse", "HEAD"], code: 128 },
+			{ when: ["--verify", "refs/heads/"], code: 1 },
+			{ when: ["--verify", "refs/remotes/origin/fix/thing"], stdout: "a\n" },
+			{ when: ["worktree"], stdout: "" },
+		]);
+		const provider = createGitTreeProvider({ exec, stateDir: "/state" });
+
+		const { path } = await provider.ensure(worktree());
+
+		expect(addition(calls)?.args.slice(4)).toEqual([
+			"--track",
+			"-b",
+			"fix/thing",
+			path,
+			"origin/fix/thing",
+		]);
+	});
+
+	it("says what to do when another checkout holds the branch", async () => {
+		const { exec } = fakeExec([
+			{ when: ["rev-parse", "HEAD"], code: 128 },
+			{ when: ["--verify"], stdout: "a\n" },
+			{
+				when: ["worktree"],
+				code: 128,
+				stderr: "fatal: 'main' is already used by worktree at '/src/world'",
+			},
+		]);
+		const provider = createGitTreeProvider({ exec, stateDir: "/state" });
+
+		await expect(
+			provider.ensure({ ...worktree(), branch: "main" }),
+		).rejects.toThrow(/\/src\/world.*new branch/s);
+	});
+
+	it("fetches a commit it does not have before pinning it", async () => {
+		const { exec, calls } = fakeExec([
+			{ when: ["rev-parse", "HEAD"], code: 128 },
+			{ when: ["cat-file"], code: 1 },
+			{ when: ["fetch"], stdout: "" },
+			{ when: ["worktree"], stdout: "" },
+		]);
+		const provider = createGitTreeProvider({ exec, stateDir: "/state" });
+
+		await provider.ensure(snapshot());
+
+		const fetched = calls.findIndex((call) => call.args.includes("fetch"));
+		expect(calls[fetched]?.args).toContain("abc123");
+		expect(fetched).toBeLessThan(
+			calls.findIndex((call) => call.args.includes("add")),
+		);
 	});
 
 	it("puts the tree under the state directory, named by its identity", async () => {
@@ -222,6 +321,22 @@ describe("a tree that is already there", () => {
 				commit: SHA,
 			}),
 		).rejects.toThrow(/stands at 0000000/);
+	});
+
+	it("takes a short id for the full one it begins", async () => {
+		const provider = createGitTreeProvider({
+			exec: standingAt(SHA, []),
+			stateDir: "/state",
+		});
+
+		const held = await provider.ensure({
+			intent: "snapshot",
+			repo: { key: "github:o/r", localPath: "/checkout" },
+			purpose: "review",
+			commit: SHA.slice(0, 12),
+		});
+
+		expect(held.path).toContain("snapshot-github-o-r-");
 	});
 
 	it("cuts one when nothing is there", async () => {

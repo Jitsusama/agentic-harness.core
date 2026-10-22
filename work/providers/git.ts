@@ -20,7 +20,64 @@ import { type Exec, run } from "../../exec/index.js";
 import { withoutCredentials } from "../../remote/index.js";
 import { displayPath } from "../../ui/path.js";
 import type { TreeProvider } from "../broker.js";
-import { treeIdentity, treeSource } from "../tree.js";
+import { type TreeRequest, treeIdentity, treeSource } from "../tree.js";
+
+/**
+ * Whether a tree standing at `head` is the commit asked for. A short id
+ * names the full one it begins, which is how people write commits; a
+ * snapshot pinned by one was refused against itself.
+ */
+function sameCommit(head: string, asked: string): boolean {
+	if (head === asked) return true;
+	return /^[0-9a-f]{7,}$/i.test(asked) && head.startsWith(asked.toLowerCase());
+}
+
+/**
+ * How to check a worktree out on `branch`, whether or not it exists.
+ *
+ * A branch that is here is checked out as it is. One only origin has is
+ * made to follow origin's. One nobody has yet is made from the base asked
+ * for, or origin's default, tracking nothing: `worktree add` without `-b`
+ * refused every new name with `invalid reference`, and a branch that
+ * tracked origin's default had its leased push compared against main.
+ */
+async function branchArgs(
+	git: (...args: string[]) => ReturnType<Exec>,
+	path: string,
+	branch: string,
+	base: string | undefined,
+): Promise<string[]> {
+	const exists = async (ref: string) =>
+		(await git("rev-parse", "--verify", "--quiet", ref)).code === 0;
+	if (await exists(`refs/heads/${branch}`)) return [path, branch];
+	if (await exists(`refs/remotes/origin/${branch}`)) {
+		return ["--track", "-b", branch, path, `origin/${branch}`];
+	}
+	if (base !== undefined) return ["--no-track", "-b", branch, path, base];
+	const head = await git("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD");
+	const start =
+		head.code === 0 && head.stdout.trim() !== ""
+			? head.stdout.trim().replace(/^refs\/remotes\//, "")
+			: "HEAD";
+	return ["--no-track", "-b", branch, path, start];
+}
+
+/**
+ * What to say when git will not cut a tree: git's own words, and when
+ * another checkout holds the branch, the remedy that works. Git keeps
+ * one checkout per branch, so a tree on `main` beside the main checkout
+ * can only be a new branch from it, or a snapshot to read.
+ */
+function cutFailure(said: string, request: TreeRequest): string {
+	const words = said.trim();
+	const held = words.match(
+		/already (?:used by worktree|checked out) at '([^']+)'/,
+	);
+	if (request.intent === "worktree" && held) {
+		return `${words}\n${request.branch} is checked out at ${displayPath(held[1] ?? "")}, and git keeps one checkout per branch. Cut this tree on a new branch, which is made from ${request.branch} when you name it as the base, or take a snapshot to read it.`;
+	}
+	return `Cutting a tree for ${request.purpose} failed: ${words}`;
+}
 
 /** The built-in provider's id, and the general case's specificity. */
 const ID = "git-worktree";
@@ -83,7 +140,10 @@ export function createGitTreeProvider(deps: {
 				// this name standing anywhere else is not the thing being asked
 				// for. Refuse rather than hand it over: silently reviewing a
 				// different commit is the one outcome nobody could detect.
-				if (request.intent === "snapshot" && head !== request.commit) {
+				if (
+					request.intent === "snapshot" &&
+					!sameCommit(head, request.commit)
+				) {
 					throw new Error(
 						`A tree for ${request.repo.key} already sits at ${displayPath(path)} but stands at ${head} rather than ${request.commit}. Release it before pinning a snapshot there.`,
 					);
@@ -91,16 +151,32 @@ export function createGitTreeProvider(deps: {
 				return { path };
 			}
 
-			const at =
-				request.intent === "snapshot"
-					? ["--detach", path, request.commit]
-					: [path, request.branch];
-			await run(
-				exec,
-				"git",
-				["-C", source.path, "worktree", "add", ...at],
-				`Cutting a tree for ${request.purpose}`,
-			);
+			const git = (...args: string[]) =>
+				exec("git", ["-C", source.path, ...args]);
+			let at: string[];
+			if (request.intent === "snapshot") {
+				// A commit somebody else pushed is often not here yet, which
+				// left a review reading the checkout at whatever commit it
+				// stood on. Asking origin for it costs one fetch, and when
+				// origin will not give it, git's refusal below says so.
+				const have = await git("cat-file", "-e", `${request.commit}^{commit}`);
+				if (have.code !== 0) {
+					await git("fetch", "--quiet", "--no-tags", "origin", request.commit);
+				}
+				at = ["--detach", path, request.commit];
+			} else {
+				at = await branchArgs(git, path, request.branch, request.baseBranch);
+			}
+			const cut = await exec("git", [
+				"-C",
+				source.path,
+				"worktree",
+				"add",
+				...at,
+			]);
+			if (cut.code !== 0) {
+				throw new Error(cutFailure(cut.stderr || cut.stdout, request));
+			}
 			return { path };
 		},
 
