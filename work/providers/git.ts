@@ -15,7 +15,8 @@
  * without asking.
  */
 
-import { join } from "node:path";
+import { statfs } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { type Exec, run } from "../../exec/index.js";
 import { withoutCredentials } from "../../remote/index.js";
 import { displayPath } from "../../ui/path.js";
@@ -92,6 +93,23 @@ function cutFailure(said: string, request: TreeRequest): string {
 	return `Cutting a tree for ${request.purpose} failed: ${words}`;
 }
 
+/** What statfs reports for a btrfs filesystem. */
+const BTRFS_MAGIC = 0x9123683e;
+
+/**
+ * Whether trees under `dir` sit on btrfs, asked of the nearest folder
+ * that exists, since the state directory is made with the first tree.
+ */
+export async function onBtrfs(dir: string): Promise<boolean> {
+	for (let at = dir; ; at = dirname(at)) {
+		try {
+			return (await statfs(at)).type === BTRFS_MAGIC;
+		} catch {
+			if (dirname(at) === at) return false;
+		}
+	}
+}
+
 /** The built-in provider's id, and the general case's specificity. */
 const ID = "git-worktree";
 const GENERAL = 0;
@@ -113,7 +131,16 @@ export function createGitTreeProvider(deps: {
 	 */
 	execFor?: (signal: AbortSignal) => Exec;
 	stateDir: string;
+	/**
+	 * Whether each tree under the state directory is a subvolume of its
+	 * own. On btrfs, every file under one subvolume shares its tree lock
+	 * and log, so builds in a tree beside Joel's files held up an app's
+	 * save: p99 600 ms beside 20 builds, 18 ms with them apart. Asks the
+	 * filesystem unless told.
+	 */
+	subvolumes?: (stateDir: string) => Promise<boolean>;
 }): TreeProvider {
+	const subvolumes = deps.subvolumes ?? onBtrfs;
 	const execOf = (signal: AbortSignal | undefined): Exec =>
 		signal !== undefined && deps.execFor !== undefined
 			? deps.execFor(signal)
@@ -208,6 +235,12 @@ export function createGitTreeProvider(deps: {
 			} else {
 				at = await branchArgs(git, path, request.branch, request.baseBranch);
 			}
+			// git fills an empty directory as readily as it makes one. A
+			// subvolume that can't be made, `btrfs` missing say, leaves git
+			// to make a plain one, as it always did.
+			const apart =
+				(await subvolumes(deps.stateDir)) &&
+				(await exec("btrfs", ["subvolume", "create", path])).code === 0;
 			const cut = await exec("git", [
 				"-C",
 				source.path,
@@ -216,6 +249,8 @@ export function createGitTreeProvider(deps: {
 				...at,
 			]);
 			if (cut.code !== 0) {
+				// An empty subvolume goes with rmdir, as its owner.
+				if (apart) await exec("rmdir", [path]);
 				throw new Error(cutFailure(cut.stderr || cut.stdout, request));
 			}
 			return { path };
