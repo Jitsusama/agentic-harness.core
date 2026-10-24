@@ -23,6 +23,12 @@ const fixture = fileURLToPath(
 const STILL_RUNNING_MS = 5000;
 /** How long a cancellation may take to reach the server. */
 const CANCEL_ARRIVES_MS = 3000;
+/**
+ * How long the server may take to start and get a request. Giving up a
+ * fixed second in left nothing to cancel when a loaded machine (load 65)
+ * took longer than that to start it.
+ */
+const REQUEST_ARRIVES_MS = 20_000;
 
 /** The call's outcome, or a note that it was still waiting. */
 async function outcome(call: Promise<unknown>): Promise<string> {
@@ -39,9 +45,26 @@ async function outcome(call: Promise<unknown>): Promise<string> {
 	]);
 }
 
+/** Waits until the server has a request for `method`. */
+async function arrived(received: string, method: string): Promise<void> {
+	const seen = await logged(received, method, REQUEST_ARRIVES_MS);
+	if (!seen.includes(method)) {
+		throw new Error(`The server never got ${method}.`);
+	}
+}
+
 /** The methods the server was told to stop working on, once it has been. */
 async function cancelled(log: string, method: string): Promise<string[]> {
-	const deadline = Date.now() + CANCEL_ARRIVES_MS;
+	return logged(log, method, CANCEL_ARRIVES_MS);
+}
+
+/** The methods in a log the server writes, once `method` is, or by `withinMs`. */
+async function logged(
+	log: string,
+	method: string,
+	withinMs: number,
+): Promise<string[]> {
+	const deadline = Date.now() + withinMs;
 	for (;;) {
 		const seen = existsSync(log)
 			? readFileSync(log, "utf8").split("\n").filter(Boolean)
@@ -89,6 +112,7 @@ describe("a standalone request the server never answers", () => {
 	let dir: string;
 	let file: string;
 	let log: string;
+	let received: string;
 	let backend: StandaloneBackend | undefined;
 
 	const start = (requestMs?: number): StandaloneBackend => {
@@ -97,7 +121,7 @@ describe("a standalone request the server never answers", () => {
 				silent: {
 					name: "silent",
 					command: process.execPath,
-					args: [fixture, log],
+					args: [fixture, log, received],
 					fileTypes: [".silent"],
 					rootMarkers: ["root.marker"],
 				},
@@ -113,6 +137,7 @@ describe("a standalone request the server never answers", () => {
 		file = join(dir, "one.silent");
 		writeFileSync(file, "nothing here\n");
 		log = join(dir, "cancelled.log");
+		received = join(dir, "received.log");
 	});
 
 	afterEach(async () => {
@@ -125,10 +150,11 @@ describe("a standalone request the server never answers", () => {
 		it(`ends a ${name} the moment its caller gives up, and tells the server`, async () => {
 			const controller = new AbortController();
 			const call = operation(start(), file, { signal: controller.signal });
-			setTimeout(() => controller.abort(), 1000);
+			await arrived(received, method);
+			controller.abort();
 			expect(await outcome(call)).toBe("AbortError");
 			expect(await cancelled(log, method)).toContain(method);
-		}, 15_000);
+		}, 30_000);
 	}
 
 	it("ends a workspace symbol search the moment its caller gives up", async () => {
@@ -137,18 +163,20 @@ describe("a standalone request the server never answers", () => {
 		// start one with a call that is let go of straight away.
 		const warm = new AbortController();
 		const warming = live.documentSymbols(file, { signal: warm.signal });
-		setTimeout(() => warm.abort(), 1000);
+		await arrived(received, "textDocument/documentSymbol");
+		warm.abort();
 		await outcome(warming);
 		const controller = new AbortController();
 		const call = live.workspaceSymbols("anything", {
 			signal: controller.signal,
 		});
-		setTimeout(() => controller.abort(), 200);
+		await arrived(received, "workspace/symbol");
+		controller.abort();
 		expect(await outcome(call)).toBe("AbortError");
 		expect(await cancelled(log, "workspace/symbol")).toContain(
 			"workspace/symbol",
 		);
-	}, 15_000);
+	}, 45_000);
 
 	it("gives up on a request that outlasts the request clock, and says so", async () => {
 		const call = start(1500).definition(at(file));
@@ -160,8 +188,21 @@ describe("a standalone request the server never answers", () => {
 
 	it("still answers what the server does answer", async () => {
 		// Diagnostics come from what the server published, which this one
-		// does at once; a clock on every request must not cost that.
-		const call = start(1500).diagnostics(file);
-		expect(await outcome(call)).toBe("answered");
-	}, 15_000);
+		// does at once; a clock on every request must not cost that. The
+		// clock is roomy, since at a load of 65 the server took longer than
+		// 1.5 s to start and publish, and the wait is all this test reads.
+		const call = start(REQUEST_ARRIVES_MS).diagnostics(file);
+		expect(
+			await Promise.race([
+				call.then(
+					() => "answered",
+					(error: unknown) =>
+						error instanceof Error ? error.name : String(error),
+				),
+				new Promise<string>((resolve) =>
+					setTimeout(() => resolve("still running"), REQUEST_ARRIVES_MS),
+				),
+			]),
+		).toBe("answered");
+	}, 30_000);
 });
