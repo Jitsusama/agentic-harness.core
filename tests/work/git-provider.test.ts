@@ -194,6 +194,24 @@ describe("createGitTreeProvider", () => {
 		expect(addition(calls)).toBeUndefined();
 	});
 
+	it("refuses a ref's full name as the branch to work on", async () => {
+		// Given refs/remotes/origin/main, nothing bore it under refs/heads
+		// or the remotes, so a branch refs/heads/refs/remotes/origin/main
+		// was made, shadowing origin's main for git's every lookup.
+		const { exec, calls } = fakeExec([
+			{ when: ["rev-parse", "HEAD"], code: 128 },
+			{ when: ["--verify"], code: 1 },
+			{ when: ["symbolic-ref"], stdout: "refs/remotes/origin/main\n" },
+			{ when: ["worktree"], stdout: "" },
+		]);
+		const provider = createGitTreeProvider({ exec, stateDir: "/state" });
+
+		await expect(
+			provider.ensure({ ...worktree(), branch: "refs/remotes/origin/main" }),
+		).rejects.toThrow(/refs\/remotes\/origin\/main is a ref's full name/);
+		expect(addition(calls)).toBeUndefined();
+	});
+
 	it("works on a local branch of that name when there is one", async () => {
 		const { exec, calls } = fakeExec([
 			{ when: ["rev-parse", "HEAD"], code: 128 },

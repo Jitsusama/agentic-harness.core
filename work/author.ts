@@ -86,6 +86,26 @@ export function safeBranchName(name: string): string | undefined {
 	return trimmed;
 }
 
+/**
+ * Why a ref's full name can't be a branch to make, or nothing when
+ * `name` isn't one.
+ *
+ * Git takes `refs/remotes/origin/main` as a new branch's name and
+ * makes `refs/heads/refs/remotes/origin/main`, which then shadows
+ * origin's main wherever it is named in full. Nobody means that, so
+ * the name is refused with the short one it most likely meant.
+ */
+export function fullRefRefusal(name: string): string | undefined {
+	if (!name.startsWith("refs/")) return undefined;
+	const short = name.replace(/^refs\/(?:heads\/|remotes\/[^/]+\/|tags\/)?/, "");
+	return (
+		`${name} is a ref's full name, and a branch made from it would sit at ` +
+		`refs/heads/${name}, shadowing it. To work on a branch, name the branch ` +
+		`itself, such as ${short}; to start from ${name}, give it as where the ` +
+		"branch starts."
+	);
+}
+
 /** How long a whole branch name should stay under, by convention. */
 const BRANCH_NAME_BUDGET = 40;
 
@@ -179,6 +199,8 @@ export function createGitAuthor(deps: { exec: Exec }): WorkAuthor {
 						"declining to make it.",
 				);
 			}
+			const fullName = fullRefRefusal(safe);
+			if (fullName) throw new Error(fullName);
 			let from: string | undefined;
 			if (options?.from !== undefined) {
 				from = safeBranchName(options.from);
@@ -187,6 +209,24 @@ export function createGitAuthor(deps: { exec: Exec }): WorkAuthor {
 						`Not a usable start point: ${JSON.stringify(options.from)}.`,
 					);
 				}
+			}
+			// Asked for origin/main, git makes a local origin/main beside
+			// origin's own, and every later command naming it gets the local
+			// one. The tree provider refuses that name too.
+			const remote = await deps.exec("git", [
+				"-C",
+				treePath,
+				"rev-parse",
+				"--verify",
+				"--quiet",
+				`refs/remotes/${safe}`,
+			]);
+			if (remote.code === 0) {
+				throw new Error(
+					`${safe} is a remote's branch, and a local branch of that name ` +
+						"would shadow it. Name the branch to work on, and give " +
+						`${safe} as where it starts.`,
+				);
 			}
 			await run(
 				deps.exec,

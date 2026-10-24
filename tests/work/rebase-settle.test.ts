@@ -18,6 +18,13 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+/**
+ * Room for a test that halts and resumes a real rebase on a loaded
+ * machine, which took over vitest's five seconds at a load of 23.
+ */
+const REAL_GIT_MS = 30_000;
+
 import { spawnExec } from "../../exec/index.js";
 import { createGitRebaser } from "../../work/rebase.js";
 import { disposeRepo, freshRepo, git } from "../support/git-fixture.js";
@@ -81,7 +88,9 @@ async function unmerged(): Promise<string> {
 	return git(repo, "diff", "--name-only", "--diff-filter=U");
 }
 
-describe("resuming once a conflict is settled in the file", () => {
+describe("resuming once a conflict is settled in the file", {
+	timeout: REAL_GIT_MS,
+}, () => {
 	it("stages the settled file and carries on, without a git add", async () => {
 		await halted({ "notes.md": "a\n" }, { "notes.md": "main\n" }, [
 			{ "notes.md": "topic\n" },
@@ -130,7 +139,9 @@ describe("resuming once a conflict is settled in the file", () => {
 	});
 });
 
-describe("leaving unsettled what is not plainly settled", () => {
+describe("leaving unsettled what is not plainly settled", {
+	timeout: REAL_GIT_MS,
+}, () => {
 	it("keeps a file that still holds conflict markers unmerged", async () => {
 		await halted({ "notes.md": "a\n" }, { "notes.md": "main\n" }, [
 			{ "notes.md": "topic\n" },
@@ -192,7 +203,9 @@ describe("leaving unsettled what is not plainly settled", () => {
 	});
 });
 
-describe("naming what a resumed replay is onto", () => {
+describe("naming what a resumed replay is onto", {
+	timeout: REAL_GIT_MS,
+}, () => {
 	/**
 	 * Trunk only as a remote's, with a merged branch left on the same commit,
 	 * as the tree was on 20 October.
