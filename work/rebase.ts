@@ -588,7 +588,23 @@ export function createGitRebaser(deps: { exec: Exec }): WorkRebaser {
 				"--count",
 				`${onto}..HEAD`,
 			]);
-			if (before === "0") {
+			// No commit of its own is not the same as being there: a branch cut
+			// from main and asked onto a branch built on main has none, yet the
+			// base holds commits it lacks, and the rebase moves it up to them.
+			// Only a base the branch already holds leaves nothing to do.
+			if (
+				before === "0" &&
+				(
+					await exec("git", [
+						"-C",
+						treePath,
+						"merge-base",
+						"--is-ancestor",
+						onto,
+						"HEAD",
+					])
+				).code === 0
+			) {
 				return { kind: "already-there", branch, onto };
 			}
 

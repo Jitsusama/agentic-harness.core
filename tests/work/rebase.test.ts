@@ -68,11 +68,36 @@ describe("replaying a branch", () => {
 			{ when: ["rev-parse", "--abbrev-ref", "HEAD"], stdout: "topic\n" },
 			{ when: ["status", "--porcelain"], stdout: "" },
 			{ when: ["rev-list", "--count"], stdout: "0\n" },
+			{ when: ["merge-base", "--is-ancestor", "main", "HEAD"], code: 0 },
 		]);
 
 		const outcome = await createGitRebaser({ exec }).rebase(TREE, "main");
 
 		expect(outcome).toMatchObject({ kind: "already-there" });
+	});
+
+	it("moves a branch with nothing of its own up to a base that moved on", async () => {
+		// A branch just cut from main, asked onto a branch built on main: it
+		// holds no commit the base lacks, but the base holds ones it lacks, so
+		// it is not there yet.
+		const { exec, calls } = fakeExec([
+			...settled,
+			{ when: ["rev-parse", "--abbrev-ref", "HEAD"], stdout: "topic\n" },
+			{ when: ["status", "--porcelain"], stdout: "" },
+			{ when: ["rev-list", "--count"], stdout: "0\n" },
+			{ when: ["merge-base", "--is-ancestor", "base", "HEAD"], code: 1 },
+			{ when: ["rebase", "base"], code: 0 },
+		]);
+
+		const outcome = await createGitRebaser({ exec }).rebase(TREE, "base");
+
+		expect(calls.some((one) => one.args.includes("rebase"))).toBe(true);
+		expect(outcome).toMatchObject({
+			kind: "replayed",
+			branch: "topic",
+			onto: "base",
+			commits: 0,
+		});
 	});
 
 	it("scopes every call to the tree", async () => {
