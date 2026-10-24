@@ -1,6 +1,14 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 import {
 	GOOGLE_REQUEST_TIMEOUT_MS,
 	google,
@@ -29,6 +37,13 @@ async function outcome(call: Promise<unknown>): Promise<string> {
 // platform's timed-out signal is stood in for by one the test fires, so
 // the clock can be proved without waiting it out.
 describe("a Google API request nobody answers", () => {
+	// The Drive client's module is large and loaded on first use. Loaded
+	// inside the first test, under a loaded full suite, it ran past that
+	// test's clock before any request was sent.
+	beforeAll(() => {
+		google.drive({ version: "v3" });
+	}, 60_000);
+
 	let server: Server;
 	let rootUrl: string;
 	let clocks: number[];

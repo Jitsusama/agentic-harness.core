@@ -43,7 +43,10 @@ async function longestStall<T>(
 	}
 }
 
-describe("extractArticle", () => {
+// Each extraction may take its whole wall, which is longer than the test
+// runner's default clock, and the first in a worker loads the DOM library
+// cold: under a loaded full suite that alone ran past five seconds.
+describe("extractArticle", { timeout: ARTICLE_WALL_MS + 10_000 }, () => {
 	it("extracts the main content as markdown, with links against the page's address", async () => {
 		const found = await extractArticle(article, "https://example.com/posts/1");
 		expect(found?.title).toBe("On Clocks");
