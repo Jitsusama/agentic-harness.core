@@ -14,13 +14,30 @@ import { fakeExec } from "../support/fake-exec.js";
 
 const TREE = "/trees/topic";
 
+/**
+ * What `topic`'s settings say it follows: a remote and the branch there,
+ * or nothing. They come before any reply to `remote`, since the fake
+ * matches fragments as substrings and `branch.topic.remote` holds one.
+ */
+function following(remote?: string, merge = "refs/heads/topic") {
+	return remote === undefined
+		? [{ when: ["config", "--get", "branch.topic."], code: 1 }]
+		: [
+				{
+					when: ["config", "--get", "branch.topic.remote"],
+					stdout: `${remote}\n`,
+				},
+				{
+					when: ["config", "--get", "branch.topic.merge"],
+					stdout: `${merge}\n`,
+				},
+			];
+}
+
 /** A tree on `topic`, tracking `origin/topic`, with an origin remote. */
 const tracked = [
 	{ when: ["rev-parse", "--abbrev-ref", "HEAD"], stdout: "topic\n" },
-	{
-		when: ["rev-parse", "--abbrev-ref", "topic@{upstream}"],
-		stdout: "origin/topic\n",
-	},
+	...following("origin"),
 	{ when: ["remote"], stdout: "origin\n" },
 	{ when: ["push"], stdout: "", stderr: "To github.com\n" },
 ];
@@ -28,7 +45,7 @@ const tracked = [
 /** The same tree, on a branch that has never been pushed. */
 const untracked = [
 	{ when: ["rev-parse", "--abbrev-ref", "HEAD"], stdout: "topic\n" },
-	{ when: ["rev-parse", "--abbrev-ref", "topic@{upstream}"], code: 128 },
+	...following(),
 	{ when: ["remote"], stdout: "origin\n" },
 	{ when: ["push"], stdout: "", stderr: "To github.com\n" },
 ];
@@ -66,10 +83,7 @@ describe("publishing a branch", () => {
 		// copy of a branch nobody is watching.
 		const { exec, calls } = fakeExec([
 			{ when: ["rev-parse", "--abbrev-ref", "HEAD"], stdout: "topic\n" },
-			{
-				when: ["rev-parse", "--abbrev-ref", "topic@{upstream}"],
-				stdout: "upstream/topic\n",
-			},
+			...following("upstream"),
 			{ when: ["remote"], stdout: "origin\nupstream\n" },
 			{ when: ["push"], stderr: "To elsewhere\n" },
 		]);
@@ -130,7 +144,7 @@ describe("replacing what the remote has", () => {
 
 	it("explains a refused lease as work that arrived, not as a failure", async () => {
 		const { exec } = fakeExec([
-			...tracked.slice(0, 3),
+			...tracked.slice(0, -1),
 			{
 				when: ["push"],
 				code: 1,
@@ -160,10 +174,26 @@ describe("refusing to publish", () => {
 		expect(outcome).toHaveProperty("reason", expect.stringContaining("branch"));
 	});
 
+	it("publishes to origin a branch that follows one of this repo's own", async () => {
+		// `git checkout -b topic main --track` records the remote as `.`,
+		// which is this repo rather than anywhere to push to.
+		const { exec, calls } = fakeExec([
+			{ when: ["rev-parse", "--abbrev-ref", "HEAD"], stdout: "topic\n" },
+			...following(".", "refs/heads/main"),
+			{ when: ["remote"], stdout: "origin\n" },
+			{ when: ["push"], stderr: "To github.com\n" },
+		]);
+
+		const outcome = await createGitPublisher({ exec }).push(TREE);
+
+		expect(pushArgs(calls)).toContain("--set-upstream origin topic");
+		expect(outcome).toMatchObject({ kind: "published", tracked: true });
+	});
+
 	it("names the remotes it does have when the one asked for is absent", async () => {
 		const { exec } = fakeExec([
 			{ when: ["rev-parse", "--abbrev-ref", "HEAD"], stdout: "topic\n" },
-			{ when: ["rev-parse", "--abbrev-ref", "topic@{upstream}"], code: 128 },
+			...following(),
 			{ when: ["remote"], stdout: "origin\nfork\n" },
 		]);
 
@@ -179,7 +209,7 @@ describe("refusing to publish", () => {
 		// Reported rather than dressed as success, because "published" about a
 		// no-op is how somebody concludes their commit went up when it did not.
 		const { exec } = fakeExec([
-			...tracked.slice(0, 3),
+			...tracked.slice(0, -1),
 			{ when: ["push"], stdout: "Everything up-to-date\n" },
 		]);
 
@@ -197,9 +227,16 @@ describe("a branch that has diverged from its remote", () => {
 	// is the layer that knows.
 	const rejected = [
 		{ when: ["rev-parse", "--abbrev-ref", "HEAD"], stdout: "topic\n" },
+		...following("origin"),
+		// Before `remote`, which `refs/remotes/` would match too.
 		{
-			when: ["rev-parse", "--abbrev-ref", "topic@{upstream}"],
-			stdout: "origin/topic\n",
+			when: [
+				"rev-list",
+				"--left-right",
+				"--count",
+				"refs/heads/topic...refs/remotes/origin/topic",
+			],
+			stdout: "5\t3\n",
 		},
 		{ when: ["remote"], stdout: "origin\n" },
 		{
@@ -207,10 +244,6 @@ describe("a branch that has diverged from its remote", () => {
 			code: 1,
 			stderr:
 				" ! [rejected]        topic -> topic (non-fast-forward)\nhint: Updates were rejected because the tip of your current branch is behind\nhint: use 'git pull' before pushing again.\n",
-		},
-		{
-			when: ["rev-list", "--left-right", "--count", "topic...origin/topic"],
-			stdout: "5\t3\n",
 		},
 	];
 

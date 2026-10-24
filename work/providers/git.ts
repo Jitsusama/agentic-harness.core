@@ -40,6 +40,11 @@ function sameCommit(head: string, asked: string): boolean {
  * for, or origin's default, tracking nothing: `worktree add` without `-b`
  * refused every new name with `invalid reference`, and a branch that
  * tracked origin's default had its leased push compared against main.
+ *
+ * A remote's branch, such as `origin/main`, is refused rather than made:
+ * nothing local or on origin bore that name, so a local branch called
+ * origin/main was made, and it shadowed origin's own in every command
+ * that named it from then on.
  */
 async function branchArgs(
 	git: (...args: string[]) => ReturnType<Exec>,
@@ -52,6 +57,11 @@ async function branchArgs(
 	if (await exists(`refs/heads/${branch}`)) return [path, branch];
 	if (await exists(`refs/remotes/origin/${branch}`)) {
 		return ["--track", "-b", branch, path, `origin/${branch}`];
+	}
+	if (await exists(`refs/remotes/${branch}`)) {
+		throw new Error(
+			`${branch} is a remote's branch, and a local branch of that name would shadow it. To work from it, name the branch to work on and give ${branch} as its base; to read it, take a snapshot.`,
+		);
 	}
 	if (base !== undefined) return ["--no-track", "-b", branch, path, base];
 	const head = await git("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD");
@@ -147,6 +157,34 @@ export function createGitTreeProvider(deps: {
 					throw new Error(
 						`A tree for ${request.repo.key} already sits at ${displayPath(path)} but stands at ${head} rather than ${request.commit}. Release it before pinning a snapshot there.`,
 					);
+				}
+				// A worktree is named for the branch it was cut on, and work moves
+				// trees to other branches. One moved since was handed to the next
+				// caller asking for the first branch, who then worked on the
+				// other one believing it theirs.
+				if (request.intent === "worktree") {
+					const on = await exec("git", [
+						"-C",
+						path,
+						"symbolic-ref",
+						"--quiet",
+						"--short",
+						"HEAD",
+					]);
+					const branch = on.code === 0 ? on.stdout.trim() : "";
+					if (branch !== request.branch) {
+						const where =
+							branch === ""
+								? `stands detached at ${head.slice(0, 12)} rather than on ${request.branch}`
+								: `stands on ${branch} rather than ${request.branch}`;
+						const remedy =
+							branch === ""
+								? "Release it to cut a fresh one"
+								: `Release it to cut a fresh one, or ask for ${branch} to work on it as it is`;
+						throw new Error(
+							`The tree cut for ${request.branch} at ${displayPath(path)} ${where}, so it is not the tree asked for. ${remedy}.`,
+						);
+					}
 				}
 				return { path };
 			}
