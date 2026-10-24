@@ -178,18 +178,35 @@ export function createGitPublisher(deps: { exec: Exec }): WorkPublisher {
 			// An existing upstream is the honest default: pushing a tracked
 			// branch somewhere else is how a fork ends up with a copy of a
 			// branch nobody is watching.
-			const upstream = await ask(exec, treePath, [
-				"rev-parse",
-				"--abbrev-ref",
-				`${branch}@{upstream}`,
+			//
+			// Read from the branch's own settings rather than its upstream's
+			// short name. Beside a local branch called origin/main, git spells
+			// origin's main `remotes/origin/main` to keep the two apart, and the
+			// first word of that was taken for the remote: "no remote called
+			// remotes". A remote of `.` is this repo, which is no remote at all.
+			const configured = await ask(exec, treePath, [
+				"config",
+				"--get",
+				`branch.${branch}.remote`,
 			]);
+			const upstreamRemote =
+				configured !== undefined && configured !== "" && configured !== "."
+					? configured
+					: undefined;
+			const merge =
+				upstreamRemote === undefined
+					? undefined
+					: await ask(exec, treePath, [
+							"config",
+							"--get",
+							`branch.${branch}.merge`,
+						]);
 			// Tracked means tracking a branch of its own name. A branch cut from
 			// `origin/main` starts out tracking main, and kept doing so after it
 			// was published, so its status, its ahead and behind, and anything
 			// reading its upstream all answered about main.
-			const tracked = upstream?.endsWith(`/${branch}`) === true;
-			const remote =
-				options.remote ?? upstream?.split("/")[0] ?? DEFAULT_REMOTE;
+			const tracked = merge === `refs/heads/${branch}`;
+			const remote = options.remote ?? upstreamRemote ?? DEFAULT_REMOTE;
 
 			const known = await ask(exec, treePath, ["remote"]);
 			if (known === undefined || !known.split("\n").includes(remote)) {
@@ -248,7 +265,7 @@ export function createGitPublisher(deps: { exec: Exec }): WorkPublisher {
 						"rev-list",
 						"--left-right",
 						"--count",
-						`${branch}...${remote}/${branch}`,
+						`refs/heads/${branch}...refs/remotes/${remote}/${branch}`,
 					]);
 					const [mine, theirs] = (counts ?? "").split(/\s+/);
 					const apart =

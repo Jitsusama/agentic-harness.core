@@ -102,3 +102,26 @@ describe.each([
 		expect(outcome).toMatchObject({ kind: "published", replaced: true });
 	});
 });
+
+describe("publishing beside a local branch named like origin's", () => {
+	it("reads the remote from the branch's settings, not its upstream's short name", async () => {
+		// A local origin/main beside origin's own makes git spell the upstream
+		// remotes/origin/main to keep it apart, and the push read `remotes` as
+		// the remote: "This tree has no remote called remotes, only origin".
+		await git(clone, "branch", "origin/main", "refs/remotes/origin/main");
+		await branchFromMain("jg/topic");
+		expect(
+			await git(clone, "rev-parse", "--abbrev-ref", "jg/topic@{upstream}"),
+		).toBe("remotes/origin/main");
+
+		const outcome = await createGitPublisher({ exec: spawnExec() }).push(clone);
+
+		expect(outcome).toMatchObject({ kind: "published", tracked: true });
+		expect(await git(clone, "config", "--get", "branch.jg/topic.merge")).toBe(
+			"refs/heads/jg/topic",
+		);
+		expect(await git(clone, "rev-parse", "refs/remotes/origin/jg/topic")).toBe(
+			await git(clone, "rev-parse", "jg/topic"),
+		);
+	});
+});
