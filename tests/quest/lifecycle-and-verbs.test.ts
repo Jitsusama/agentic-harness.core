@@ -39,7 +39,11 @@ import {
 	priorityShift,
 	reorder,
 } from "../../quest/verbs/reorder.js";
-import { reparent, undo } from "../../quest/verbs/structural.js";
+import {
+	bulkConcludeOrRetire,
+	reparent,
+	undo,
+} from "../../quest/verbs/structural.js";
 
 let tmpRoot: string;
 
@@ -179,6 +183,29 @@ describe("reparent / undo", () => {
 
 		const reverted = undo(state);
 		expect(reverted.ok).toBe(true);
+	});
+
+	it("counts the quests it put back, not the fields", () => {
+		// A sweep journals each quest's priority and status, two changes
+		// for one quest; undo said "2 quests" when it reopened one.
+		const state = buildState();
+		const here = seedQuest(state.questsRoot, "Here");
+		const swept = seedQuest(state.questsRoot, "Swept");
+		loadIntoState(state, here);
+		expect(
+			bulkConcludeOrRetire(state, "conclude", {
+				action: "conclude",
+				id: swept.id,
+			}).ok,
+		).toBe(true);
+
+		const reverted = undo(state);
+
+		expect(reverted).toMatchObject({
+			ok: true,
+			message: "Undid conclude of 1 quest.",
+			details: { reverted: [swept.id], skipped: [] },
+		});
 	});
 });
 

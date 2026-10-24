@@ -347,13 +347,15 @@ export function undo(state: QuestState): QuestResult {
 		return refuse("Nothing to undo; the structural journal is empty.");
 	}
 	const { index } = discoverQuests(state.questsRoot);
-	const skipped: string[] = [];
+	// Quests, not changes: a sweep journals a quest's priority and its
+	// status, two changes for the one quest.
+	const skipped = new Set<string>();
 	const skippedChanges: JournalChange[] = [];
-	const reverted: string[] = [];
+	const reverted = new Set<string>();
 	for (const change of last.changes) {
 		const entry = index.quests.get(change.id);
 		if (!entry) {
-			skipped.push(change.id);
+			skipped.add(change.id);
 			skippedChanges.push(change);
 			continue;
 		}
@@ -363,7 +365,7 @@ export function undo(state: QuestState): QuestResult {
 		// skip instead.
 		const current = currentValue(entry.doc.frontMatter, change.field);
 		if (current !== change.new) {
-			skipped.push(change.id);
+			skipped.add(change.id);
 			skippedChanges.push(change);
 			continue;
 		}
@@ -375,7 +377,7 @@ export function undo(state: QuestState): QuestResult {
 		if (change.field === "status") {
 			appendJourneyByPath(entry.dir, `Reverted the ${last.op} (undo).`);
 		}
-		reverted.push(change.id);
+		reverted.add(change.id);
 	}
 	// Consume the op, but keep the changes we could not apply: rewrite
 	// the journal so the skipped changes survive as the operation's
@@ -386,13 +388,13 @@ export function undo(state: QuestState): QuestResult {
 		recordStructuralOp(state.questsRoot, last.op, skippedChanges);
 	}
 	const note =
-		skipped.length > 0
-			? ` (skipped ${count(skipped.length, "quest")} missing or changed since: ${skipped.join(", ")})`
+		skipped.size > 0
+			? ` (skipped ${count(skipped.size, "quest")} missing or changed since: ${[...skipped].join(", ")})`
 			: "";
-	return ok(`Undid ${last.op} of ${count(reverted.length, "quest")}${note}.`, {
+	return ok(`Undid ${last.op} of ${count(reverted.size, "quest")}${note}.`, {
 		op: last.op,
 		changes: last.changes,
-		reverted,
-		skipped,
+		reverted: [...reverted],
+		skipped: [...skipped],
 	});
 }
