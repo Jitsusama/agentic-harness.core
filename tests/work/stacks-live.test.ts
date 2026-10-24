@@ -21,6 +21,14 @@ import { cpSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+
+/**
+ * Room for a test that runs a few dozen real git commands on a loaded
+ * machine: at a load of 23 they passed in under a second each alone, and
+ * took over vitest's five seconds beside other work.
+ */
+const REAL_GIT_MS = 30_000;
+
 import {
 	createGitPublisher,
 	createGitRebaser,
@@ -137,7 +145,7 @@ async function subjects(dir: string, ref: string): Promise<string[]> {
 	return said.split("\n").filter((one) => one !== "");
 }
 
-describe("a stack in a real repository", () => {
+describe("a stack in a real repository", { timeout: REAL_GIT_MS }, () => {
 	it("records parentage where git itself will delete it with the branch", async () => {
 		const dir = await threeHigh();
 		const stacks = stacksIn();
@@ -269,7 +277,7 @@ describe("a stack in a real repository", () => {
 	});
 });
 
-describe("publishing against a real remote", () => {
+describe("publishing against a real remote", { timeout: REAL_GIT_MS }, () => {
 	it("sets upstream the first time, and says so the second", async () => {
 		const remote = await freshRepo("remote");
 		built.push(remote);
@@ -306,7 +314,7 @@ describe("publishing against a real remote", () => {
 	});
 });
 
-describe("syncing a stack", () => {
+describe("syncing a stack", { timeout: REAL_GIT_MS }, () => {
 	it("replays onto the trunk it just fetched", async () => {
 		// The failure this verb exists to prevent: replaying onto a trunk as stale
 		// as the one it started on, and reporting success.
@@ -478,7 +486,9 @@ describe("settling a conflict and carrying on", () => {
 	}, 30_000);
 });
 
-describe("telling a drifted branch from an aligned one", () => {
+describe("telling a drifted branch from an aligned one", {
+	timeout: REAL_GIT_MS,
+}, () => {
 	// This is the fact a stack is drawn for. Nothing computed it: the renderer had
 	// been able to say "needs replaying" since it was written and never once said
 	// it, because the only supplier of that answer did not exist. A listing that
