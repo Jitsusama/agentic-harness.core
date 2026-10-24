@@ -326,6 +326,88 @@ describe("createGitTreeProvider", () => {
 	});
 });
 
+// Agents' builds in a tree beside Joel's files held btrfs's lock and log
+// for that subvolume, so an app's save waited behind them: p99 600 ms
+// beside 20 builds, 18 ms with the builds in a subvolume of their own.
+describe("a tree cut on btrfs", () => {
+	const onBtrfs = async () => true;
+	const path = "/state/worktree-github-Shopify-world-fix-thing";
+
+	it("is a subvolume of its own, made before git fills it", async () => {
+		const { exec, calls } = fakeExec([
+			...ok,
+			{ when: ["subvolume", "create"], stdout: "" },
+		]);
+		const provider = createGitTreeProvider({
+			exec,
+			stateDir: "/state",
+			subvolumes: onBtrfs,
+		});
+
+		await provider.ensure(worktree());
+
+		const made = calls.findIndex((call) => call.command === "btrfs");
+		expect(calls[made]?.args).toEqual(["subvolume", "create", path]);
+		expect(made).toBeLessThan(
+			calls.findIndex((call) => call.args.includes("add")),
+		);
+	});
+
+	it("is a plain directory where the state directory isn't on btrfs", async () => {
+		const { exec, calls } = fakeExec(ok);
+		const provider = createGitTreeProvider({
+			exec,
+			stateDir: "/state",
+			subvolumes: async () => false,
+		});
+
+		await provider.ensure(snapshot());
+
+		expect(calls.some((call) => call.command === "btrfs")).toBe(false);
+		expect(addition(calls)).toBeDefined();
+	});
+
+	it("is a plain directory when no subvolume can be made", async () => {
+		const { exec, calls } = fakeExec([
+			...ok,
+			{ when: ["subvolume", "create"], code: 127, stderr: "btrfs: not found" },
+		]);
+		const provider = createGitTreeProvider({
+			exec,
+			stateDir: "/state",
+			subvolumes: onBtrfs,
+		});
+
+		await expect(provider.ensure(worktree())).resolves.toEqual({ path });
+		expect(addition(calls)).toBeDefined();
+	});
+
+	it("leaves no empty subvolume behind when git won't cut the tree", async () => {
+		const { exec, calls } = fakeExec([
+			{
+				when: ["rev-parse", "HEAD"],
+				code: 128,
+				stderr: "not a git repository",
+			},
+			{ when: ["--verify", "refs/heads/"], stdout: "abc123\n" },
+			{ when: ["subvolume", "create"], stdout: "" },
+			{ when: ["worktree"], code: 128, stderr: "fatal: invalid reference" },
+			{ when: [path], stdout: "" },
+		]);
+		const provider = createGitTreeProvider({
+			exec,
+			stateDir: "/state",
+			subvolumes: onBtrfs,
+		});
+
+		await expect(provider.ensure(worktree())).rejects.toThrow(
+			/fatal: invalid reference/,
+		);
+		// An empty subvolume goes with rmdir, as its owner, needing no root.
+		expect(calls.at(-1)).toEqual({ command: "rmdir", args: [path] });
+	});
+});
+
 describe("a tree that is already there", () => {
 	/** An exec that reports a worktree standing at the given commit. */
 	function standingAt(head: string, seen: string[][]) {
