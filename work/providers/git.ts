@@ -96,6 +96,9 @@ function cutFailure(said: string, request: TreeRequest): string {
 /** What statfs reports for a btrfs filesystem. */
 const BTRFS_MAGIC = 0x9123683e;
 
+/** A commit's full id, the only form git will fetch by. */
+const FULL_COMMIT = /^[0-9a-f]{40}$/i;
+
 /**
  * Whether trees under `dir` sit on btrfs, asked of the nearest folder
  * that exists, since the state directory is made with the first tree.
@@ -227,9 +230,27 @@ export function createGitTreeProvider(deps: {
 				// left a review reading the checkout at whatever commit it
 				// stood on. Asking origin for it costs one fetch, and when
 				// origin will not give it, git's refusal below says so.
-				const have = await git("cat-file", "-e", `${request.commit}^{commit}`);
-				if (have.code !== 0) {
-					await git("fetch", "--quiet", "--no-tags", "origin", request.commit);
+				const has = async () =>
+					(await git("cat-file", "-e", `${request.commit}^{commit}`)).code ===
+					0;
+				if (!(await has())) {
+					// git fetches by a full id only, so a short one is looked
+					// for on origin's branches, where a commit somebody means
+					// usually is. Fetched by its short id, a merge just made on
+					// main came to nothing and the cut failed "invalid reference".
+					const full = FULL_COMMIT.test(request.commit);
+					await git(
+						"fetch",
+						"--quiet",
+						"--no-tags",
+						"origin",
+						...(full ? [request.commit] : []),
+					);
+					if (!full && !(await has())) {
+						throw new Error(
+							`${request.commit} is in neither ${request.repo.key}'s checkout nor origin's branches. Give the commit's full id, which origin can be asked for directly.`,
+						);
+					}
 				}
 				at = ["--detach", path, request.commit];
 			} else {

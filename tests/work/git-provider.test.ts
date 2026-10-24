@@ -21,6 +21,13 @@ const snapshot = (repo = checkedOut): TreeRequest => ({
 	purpose: "Shopify/world#42",
 	commit: "abc123",
 });
+/** A snapshot pinned at `commit`. */
+const pinned = (commit: string): TreeRequest => ({
+	intent: "snapshot",
+	repo: checkedOut,
+	purpose: "Shopify/world#42",
+	commit,
+});
 const worktree = (
 	repo = checkedOut,
 ): Extract<TreeRequest, { intent: "worktree" }> => ({
@@ -228,6 +235,8 @@ describe("createGitTreeProvider", () => {
 		expect(addition(calls)?.args.slice(4)).toEqual([path, "origin/main"]);
 	});
 
+	const FULL = "fd2a6a5c8a1e21dc0dc2d2d5caabcbadbd32c7ae";
+
 	it("fetches a commit it does not have before pinning it", async () => {
 		const { exec, calls } = fakeExec([
 			{ when: ["rev-parse", "HEAD"], code: 128 },
@@ -237,13 +246,66 @@ describe("createGitTreeProvider", () => {
 		]);
 		const provider = createGitTreeProvider({ exec, stateDir: "/state" });
 
-		await provider.ensure(snapshot());
+		await provider.ensure(pinned(FULL));
 
 		const fetched = calls.findIndex((call) => call.args.includes("fetch"));
-		expect(calls[fetched]?.args).toContain("abc123");
+		expect(calls[fetched]?.args).toContain(FULL);
 		expect(fetched).toBeLessThan(
 			calls.findIndex((call) => call.args.includes("add")),
 		);
+	});
+
+	it("looks for a short commit it does not have on origin's branches", async () => {
+		// git fetches by a full id only. Asked for fd2a6a5c8a1e, a merge
+		// just made on origin's main, the fetch by that id fetched
+		// nothing, and the cut failed with git's bare "invalid
+		// reference". Origin's branches are where a commit somebody
+		// means usually is, so they are fetched instead.
+		const { exec: before, calls } = fakeExec([
+			{ when: ["rev-parse", "HEAD"], code: 128 },
+			{ when: ["cat-file"], code: 1 },
+			{ when: ["fetch"], stdout: "" },
+			{ when: ["worktree"], stdout: "" },
+		]);
+		// The commit is here once origin's branches are.
+		let came = false;
+		const exec: typeof before = async (command, args) => {
+			if (args.includes("fetch")) came = true;
+			if (came && args.includes("cat-file")) {
+				calls.push({ command, args });
+				return { code: 0, stdout: "", stderr: "" };
+			}
+			return before(command, args);
+		};
+		const provider = createGitTreeProvider({ exec, stateDir: "/state" });
+
+		await provider.ensure(pinned(FULL.slice(0, 12)));
+
+		expect(addition(calls)?.args).toContain(FULL.slice(0, 12));
+		const fetched = calls.find((call) => call.args.includes("fetch"));
+		expect(fetched?.args).toEqual([
+			"-C",
+			"/src/world",
+			"fetch",
+			"--quiet",
+			"--no-tags",
+			"origin",
+		]);
+	});
+
+	it("says a short commit is on neither side, and what to give instead", async () => {
+		const { exec, calls } = fakeExec([
+			{ when: ["rev-parse", "HEAD"], code: 128 },
+			{ when: ["cat-file"], code: 1 },
+			{ when: ["fetch"], stdout: "" },
+			{ when: ["worktree"], stdout: "" },
+		]);
+		const provider = createGitTreeProvider({ exec, stateDir: "/state" });
+
+		await expect(provider.ensure(pinned("0123456789ab"))).rejects.toThrow(
+			/0123456789ab.*origin.*full id/s,
+		);
+		expect(addition(calls)).toBeUndefined();
 	});
 
 	it("puts the tree under the state directory, named by its identity", async () => {
@@ -290,6 +352,7 @@ describe("createGitTreeProvider", () => {
 
 	it("keeps git's own words when git fails", async () => {
 		const { exec } = fakeExec([
+			{ when: ["cat-file"], stdout: "" },
 			{ when: ["worktree"], code: 128, stderr: "fatal: invalid reference" },
 		]);
 		const provider = createGitTreeProvider({ exec, stateDir: "/state" });
