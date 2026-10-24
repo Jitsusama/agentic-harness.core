@@ -31,6 +31,7 @@ import {
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -97,6 +98,19 @@ export interface TreeMemory {
 	forgetUsAsHolder(path: string, facts?: ProcessFacts): Promise<void>;
 }
 
+/** How many times a listing the directory changed under is read again. */
+const LISTING_TRIES = 8;
+
+/** What changes about a directory when an entry in it does. */
+function stamp(dir: string): string | undefined {
+	try {
+		const seen = statSync(dir, { bigint: true });
+		return `${seen.ino}:${seen.mtimeNs}:${seen.ctimeNs}`;
+	} catch {
+		return undefined;
+	}
+}
+
 /** A record as it sits on disk. */
 interface Written {
 	identity?: HeldTree["identity"];
@@ -153,7 +167,33 @@ export function createTreeMemory(dir: string): TreeMemory {
 		await withFileLock(fileFor(key), fn);
 	}
 
+	/**
+	 * Every record, read while the directory held still.
+	 *
+	 * A listing taken while another session renamed a record over itself
+	 * left that record out on btrfs, though the file was there throughout:
+	 * 43 times in 1.5 million reads beside six sessions rewriting one
+	 * record, each during a listing the directory's change time moved
+	 * across. A missed record reads as a tree nobody else holds, which a
+	 * release takes down and a holder rewriting the owners drops everyone
+	 * from. So a listing the directory changed under is read again, and
+	 * when it never holds still, every record any listing found is kept,
+	 * since a record seen once is a tree somebody may be standing in.
+	 */
 	function all(): readonly { at: string; held: HeldTree }[] {
+		if (!existsSync(dir)) return [];
+		const found = new Map<string, { at: string; held: HeldTree }>();
+		for (let tries = 0; tries < LISTING_TRIES; tries += 1) {
+			const before = stamp(dir);
+			const listed = listing();
+			if (before !== undefined && before === stamp(dir)) return listed;
+			for (const one of listed) found.set(one.at, one);
+		}
+		return [...found.values()];
+	}
+
+	/** One reading of the directory, as it stood while it was read. */
+	function listing(): { at: string; held: HeldTree }[] {
 		if (!existsSync(dir)) return [];
 		return readdirSync(dir)
 			.filter((name) => name.endsWith(".json"))
