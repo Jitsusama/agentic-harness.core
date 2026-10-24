@@ -8,6 +8,13 @@ import { fakeExec } from "../support/fake-exec.js";
 
 const ok = [{ when: [], stdout: "" }];
 
+/** A repo where no remote has a branch of the name being made. */
+const noRemoteHasIt = [{ when: ["rev-parse", "--verify"], code: 1 }, ...ok];
+
+/** The checkout that makes the branch, among the calls. */
+const checkout = (calls: { args: string[] }[]) =>
+	calls.find((call) => call.args.includes("checkout"))?.args;
+
 describe("safeBranchName", () => {
 	it("accepts an ordinary branch name", () => {
 		expect(safeBranchName("topic/fix-410")).toBe("topic/fix-410");
@@ -122,12 +129,12 @@ describe("recording work", () => {
 
 describe("moving a tree onto a branch", () => {
 	it("creates the branch and checks it out", async () => {
-		const { exec, calls } = fakeExec(ok);
+		const { exec, calls } = fakeExec(noRemoteHasIt);
 		const author = createGitAuthor({ exec });
 
 		await author.branch("/trees/one", "topic/fix");
 
-		expect(calls[0]?.args).toEqual([
+		expect(checkout(calls)).toEqual([
 			"-C",
 			"/trees/one",
 			"checkout",
@@ -137,12 +144,12 @@ describe("moving a tree onto a branch", () => {
 	});
 
 	it("starts the branch where it was told to", async () => {
-		const { exec, calls } = fakeExec(ok);
+		const { exec, calls } = fakeExec(noRemoteHasIt);
 		const author = createGitAuthor({ exec });
 
 		await author.branch("/trees/one", "topic/fix", { from: "origin/main" });
 
-		expect(calls[0]?.args).toEqual([
+		expect(checkout(calls)).toEqual([
 			"-C",
 			"/trees/one",
 			"checkout",
@@ -162,6 +169,34 @@ describe("moving a tree onto a branch", () => {
 			/branch name/i,
 		);
 		expect(calls).toEqual([]);
+	});
+
+	// The work tool's branch action, given refs/remotes/origin/main on
+	// 24 October, made refs/heads/refs/remotes/origin/main and checked it
+	// out: a local branch shadowing origin's main.
+	it("refuses a ref's full name without calling git", async () => {
+		const { exec, calls } = fakeExec(noRemoteHasIt);
+		const author = createGitAuthor({ exec });
+
+		for (const name of ["refs/remotes/origin/main", "refs/heads/topic"]) {
+			await expect(author.branch("/trees/one", name)).rejects.toThrow(
+				/full name.*name the branch itself/s,
+			);
+		}
+		expect(calls).toEqual([]);
+	});
+
+	it("refuses a remote's branch as the branch to make", async () => {
+		const { exec, calls } = fakeExec([
+			{ when: ["rev-parse", "--verify", "refs/remotes/origin/main"] },
+			...ok,
+		]);
+		const author = createGitAuthor({ exec });
+
+		await expect(author.branch("/trees/one", "origin/main")).rejects.toThrow(
+			/origin\/main is a remote's branch.*shadow.*as where it starts/s,
+		);
+		expect(checkout(calls)).toBeUndefined();
 	});
 
 	it("refuses an unsafe start point without calling git", async () => {

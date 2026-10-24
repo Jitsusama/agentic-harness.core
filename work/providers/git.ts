@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { type Exec, run } from "../../exec/index.js";
 import { withoutCredentials } from "../../remote/index.js";
 import { displayPath } from "../../ui/path.js";
+import { fullRefRefusal } from "../author.js";
 import type { TreeProvider } from "../broker.js";
 import { type TreeRequest, treeIdentity, treeSource } from "../tree.js";
 
@@ -52,6 +53,8 @@ async function branchArgs(
 	branch: string,
 	base: string | undefined,
 ): Promise<string[]> {
+	const fullName = fullRefRefusal(branch);
+	if (fullName) throw new Error(fullName);
 	const exists = async (ref: string) =>
 		(await git("rev-parse", "--verify", "--quiet", ref)).code === 0;
 	if (await exists(`refs/heads/${branch}`)) return [path, branch];
