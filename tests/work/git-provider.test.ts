@@ -172,6 +172,44 @@ describe("createGitTreeProvider", () => {
 		).rejects.toThrow(/\/src\/world.*new branch/s);
 	});
 
+	it("refuses a remote's branch as the branch to work on", async () => {
+		// Asked for origin/main, it found no local branch and no
+		// origin/origin/main, and made a local branch called origin/main,
+		// which then shadowed origin's own in every command that named it.
+		const { exec, calls } = fakeExec([
+			{ when: ["rev-parse", "HEAD"], code: 128 },
+			{ when: ["--verify", "refs/heads/origin/main"], code: 1 },
+			{ when: ["--verify", "refs/remotes/origin/origin/main"], code: 1 },
+			{ when: ["--verify", "refs/remotes/origin/main"], stdout: "a\n" },
+			{ when: ["symbolic-ref"], stdout: "refs/remotes/origin/main\n" },
+			{ when: ["worktree"], stdout: "" },
+		]);
+		const provider = createGitTreeProvider({ exec, stateDir: "/state" });
+
+		await expect(
+			provider.ensure({ ...worktree(), branch: "origin/main" }),
+		).rejects.toThrow(
+			/origin\/main is a remote's branch.*shadow.*name the branch.*snapshot/s,
+		);
+		expect(addition(calls)).toBeUndefined();
+	});
+
+	it("works on a local branch of that name when there is one", async () => {
+		const { exec, calls } = fakeExec([
+			{ when: ["rev-parse", "HEAD"], code: 128 },
+			{ when: ["--verify", "refs/heads/origin/main"], stdout: "a\n" },
+			{ when: ["worktree"], stdout: "" },
+		]);
+		const provider = createGitTreeProvider({ exec, stateDir: "/state" });
+
+		const { path } = await provider.ensure({
+			...worktree(),
+			branch: "origin/main",
+		});
+
+		expect(addition(calls)?.args.slice(4)).toEqual([path, "origin/main"]);
+	});
+
 	it("fetches a commit it does not have before pinning it", async () => {
 		const { exec, calls } = fakeExec([
 			{ when: ["rev-parse", "HEAD"], code: 128 },
@@ -337,6 +375,46 @@ describe("a tree that is already there", () => {
 		});
 
 		expect(held.path).toContain("snapshot-github-o-r-");
+	});
+
+	it("hands back a worktree still on the branch asked for", async () => {
+		const { exec, calls } = fakeExec([
+			{ when: ["rev-parse", "HEAD"], stdout: `${SHA}\n` },
+			{ when: ["symbolic-ref", "HEAD"], stdout: "fix/thing\n" },
+		]);
+		const provider = createGitTreeProvider({ exec, stateDir: "/state" });
+
+		const held = await provider.ensure(worktree());
+
+		expect(held.path).toBe(`/state/${treeIdentity(worktree()).key}`);
+		expect(addition(calls)).toBeUndefined();
+	});
+
+	it("refuses a worktree that has moved to another branch since it was cut", async () => {
+		// A tree is named for the branch it was cut on. One moved to another
+		// branch afterwards was handed back to the next caller asking for the
+		// first, for a purpose of its own, still on the other branch.
+		const { exec } = fakeExec([
+			{ when: ["rev-parse", "HEAD"], stdout: `${SHA}\n` },
+			{ when: ["symbolic-ref", "HEAD"], stdout: "jg/test-in-containers\n" },
+		]);
+		const provider = createGitTreeProvider({ exec, stateDir: "/state" });
+
+		await expect(provider.ensure(worktree())).rejects.toThrow(
+			/stands on jg\/test-in-containers rather than fix\/thing.*[Rr]elease it.*ask for jg\/test-in-containers/s,
+		);
+	});
+
+	it("refuses a worktree whose branch was left for a bare commit", async () => {
+		const { exec } = fakeExec([
+			{ when: ["rev-parse", "HEAD"], stdout: `${SHA}\n` },
+			{ when: ["symbolic-ref", "HEAD"], code: 1 },
+		]);
+		const provider = createGitTreeProvider({ exec, stateDir: "/state" });
+
+		await expect(provider.ensure(worktree())).rejects.toThrow(
+			/stands detached at 1f271300bc9b rather than on fix\/thing/,
+		);
 	});
 
 	it("cuts one when nothing is there", async () => {
