@@ -22,6 +22,15 @@ export interface WorktreeOnDisk {
 	dirty?: boolean;
 	/** Whether trunk already contains that branch's commits. */
 	mergedIntoTrunk?: boolean;
+	/**
+	 * For a tree with no branch, whether a branch or tag already holds
+	 * the commit it sits at.
+	 *
+	 * A snapshot is cut detached at a commit to read it, so it has no
+	 * branch for trunk to contain and would otherwise be kept for ever.
+	 * When some ref holds its commit, removing the tree loses nothing.
+	 */
+	commitKept?: boolean;
 }
 
 /** What is known when asking which trees were left behind. */
@@ -151,6 +160,22 @@ export function orphanedTrees(ask: OrphanAsk): OrphanPlan {
 				path: tree.path,
 				...(tree.branch ? { branch: tree.branch } : {}),
 			});
+			continue;
+		}
+		if (tree.branch === undefined) {
+			// Detached, which is how a snapshot is cut. Clean, so all it holds
+			// is its commit, and a ref holding that commit is enough to say
+			// nothing goes with the tree. Kept for ever without this: one
+			// repository had 172 such trees, every one clean and still at the
+			// commit it was pinned at.
+			if (tree.commitKept) {
+				reclaimable.push({ path: tree.path });
+			} else {
+				keep(
+					"nothing holds it, but no branch or tag holds the commit it sits at, so the tree may be all that keeps that commit",
+					true,
+				);
+			}
 			continue;
 		}
 		// The same ambiguity a branch has, for the same reason, and named

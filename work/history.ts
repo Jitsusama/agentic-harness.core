@@ -98,6 +98,30 @@ function parseLine(line: string): ChangedPath | undefined {
 
 /** Read a tree's state with plain git. */
 export function createGitHistory(deps: { exec: Exec }): WorkHistory {
+	/**
+	 * Whether any branch, remote-tracking branch or tag holds `commit`.
+	 *
+	 * One ref is enough to answer, so the listing stops at the first.
+	 */
+	const held = async (treePath: string, commit: string): Promise<boolean> =>
+		(
+			await run(
+				deps.exec,
+				"git",
+				[
+					"-C",
+					treePath,
+					"for-each-ref",
+					"--count=1",
+					`--contains=${commit}`,
+					"refs/heads",
+					"refs/remotes",
+					"refs/tags",
+				],
+				`Asking whether a branch holds ${commit.slice(0, 12)}`,
+			)
+		).trim() !== "";
+
 	return {
 		async status(treePath) {
 			const out = await run(
@@ -219,30 +243,42 @@ export function createGitHistory(deps: { exec: Exec }): WorkHistory {
 			);
 
 			// A porcelain record is a run of lines per tree, separated by a
-			// blank one: `worktree <path>`, then optionally `branch <ref>`
-			// or `detached`.
+			// blank one: `worktree <path>`, `HEAD <commit>`, then optionally
+			// `branch <ref>` or `detached`, and `prunable <why>` once the
+			// tree's folder has gone.
 			const trees: WorktreeOnDisk[] = [];
 			for (const record of listed.split("\n\n")) {
 				let path: string | undefined;
+				let commit: string | undefined;
 				let branch: string | undefined;
+				let gone = false;
 				for (const line of record.split("\n")) {
 					if (line.startsWith("worktree ")) path = line.slice(9).trim();
+					if (line.startsWith("HEAD ")) commit = line.slice(5).trim();
 					if (line.startsWith("branch ")) {
 						branch = line
 							.slice(7)
 							.trim()
 							.replace(/^refs\/heads\//, "");
 					}
+					if (line === "prunable" || line.startsWith("prunable ")) gone = true;
 				}
-				if (!path) continue;
+				// A tree whose folder has gone is only git's record of it, with
+				// nothing on disk to reclaim; `git worktree prune` is what clears
+				// that. Asking its status failed instead, and one such record
+				// stopped the survey of every other tree beside it.
+				if (!path || gone) continue;
 				// Asked per tree, because a dirty tree is the one refusal here
 				// that cannot be recovered from and no listing reports it.
 				const state = await this.status(path);
+				const kept =
+					!branch && commit !== undefined && (await held(treePath, commit));
 				trees.push({
 					path,
 					...(branch ? { branch } : {}),
 					...(state.clean ? {} : { dirty: true }),
 					...(branch && merged.has(branch) ? { mergedIntoTrunk: true } : {}),
+					...(kept ? { commitKept: true } : {}),
 				});
 			}
 			return trees;

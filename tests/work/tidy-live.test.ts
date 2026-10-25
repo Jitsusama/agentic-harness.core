@@ -11,7 +11,7 @@
 
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { createGitHistory, orphanedTrees, tidyPlan } from "../../work/index.js";
 import { disposeRepo, freshRepo, git } from "../support/git-fixture.js";
@@ -180,6 +180,53 @@ describe("reading worktree state from a real repository", () => {
 		const busy = plan.retained.find((t) => t.path.endsWith("busy"));
 		expect(busy?.why).toContain("uncommitted");
 		expect(busy?.decide).toBeUndefined();
+	});
+
+	it("offers a snapshot at a branch's commit, and keeps one at a lone commit", async () => {
+		const { local } = await repoWithRemote();
+		const history = createGitHistory({ exec });
+
+		// One detached at main's commit, as a snapshot is cut, and one
+		// detached at a commit made there and named by nothing else.
+		await git(local, "worktree", "add", "-q", "--detach", `${local}/.wt/read`);
+		await git(local, "worktree", "add", "-q", "--detach", `${local}/.wt/lone`);
+		await git(
+			`${local}/.wt/lone`,
+			"commit",
+			"-q",
+			"--allow-empty",
+			"-m",
+			"only here",
+		);
+
+		const plan = orphanedTrees({
+			mainPath: realpathSync(local),
+			worktrees: await history.worktrees(local, "main"),
+			remembered: [],
+		});
+
+		expect(plan.reclaimable).toEqual([
+			{ path: realpathSync(`${local}/.wt/read`) },
+		]);
+		const lone = plan.retained.find((t) => t.path.endsWith("lone"));
+		expect(lone?.decide).toBe(true);
+	});
+
+	it("passes over a tree whose folder has gone, and reads the rest", async () => {
+		const { local } = await repoWithRemote();
+		const history = createGitHistory({ exec });
+		await git(local, "branch", "spent", "main");
+		await git(local, "worktree", "add", "-q", `${local}/.wt/spent`, "spent");
+		await git(local, "worktree", "add", "-q", "--detach", `${local}/.wt/gone`);
+		// Deleted behind git's back, which leaves git's record of it, as a
+		// tree cut under a temp folder that was later cleared does.
+		await rm(`${local}/.wt/gone`, { recursive: true, force: true });
+
+		const trees = await history.worktrees(local, "main");
+
+		expect(trees.map((t) => t.path).sort()).toEqual(
+			[realpathSync(local), realpathSync(`${local}/.wt/spent`)].sort(),
+		);
 	});
 
 	it("leaves a tree something still claims", async () => {

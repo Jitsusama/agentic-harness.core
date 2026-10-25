@@ -213,6 +213,37 @@ describe("trees left behind", () => {
 		expect(kept?.decide).toBeUndefined();
 	});
 
+	it("offers a clean snapshot whose commit a branch already holds", () => {
+		const plan = orphanedTrees(
+			ask([{ path: main }, { path: "/repo/snapshot-abc", commitKept: true }]),
+		);
+
+		expect(plan.reclaimable).toEqual([{ path: "/repo/snapshot-abc" }]);
+	});
+
+	it("puts a snapshot whose commit nothing else holds to a person", () => {
+		const plan = orphanedTrees(
+			ask([{ path: main }, { path: "/repo/snapshot-def" }]),
+		);
+
+		expect(plan.reclaimable).toEqual([]);
+		const kept = plan.retained.at(-1);
+		expect(kept?.decide).toBe(true);
+		expect(kept?.why).toContain("no branch or tag holds the commit");
+	});
+
+	it("still refuses a dirty snapshot, whatever holds its commit", () => {
+		const plan = orphanedTrees(
+			ask([
+				{ path: main },
+				{ path: "/repo/snapshot-wip", dirty: true, commitKept: true },
+			]),
+		);
+
+		expect(plan.reclaimable).toEqual([]);
+		expect(plan.retained.at(-1)?.why).toContain("uncommitted");
+	});
+
 	it("names both readings when nothing can prove the work landed", () => {
 		const plan = orphanedTrees(
 			ask([{ path: main }, { path: "/repo/.worktrees/x", branch: "plan-9" }]),
