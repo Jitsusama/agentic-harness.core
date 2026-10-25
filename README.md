@@ -8,8 +8,8 @@ host surfaces things like confirmation.
 
 ## CLI
 
-Each invocation reads/writes its own small JSON state file — no daemon, no
-long-lived process. This is the shape a Bash-invoked skill or a hook
+Each invocation reads and writes its own small JSON state file, with no
+daemon and no long-lived process. This is the shape a Bash-invoked skill or a hook
 dispatcher needs.
 
 ```sh
@@ -24,9 +24,10 @@ relative to the current directory; pass `--state-file` to put it elsewhere.
 ## Development
 
 ```sh
-npm install
-npm run build      # compiles src/ + bin/ to dist/
-npm test           # builds, then runs the vitest suite (unit + CLI)
-npm run typecheck
-npm run lint
+pnpm install
+pnpm check         # lint, typecheck, and every test, browser ones included
+pnpm build         # compiles the domains and bin/ to dist/
 ```
+
+[AGENTS.md](AGENTS.md) maps the folders and has the rest of the
+commands.
