@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * A thin, stateless-per-invocation CLI over the domain modules in
- * `src/`. Each call reads whatever state it needs from a small
- * JSON file it owns, applies one command, and writes the result
- * back out — no daemon, no port, no long-lived process.
+ * A thin, stateless-per-invocation CLI over the domain modules
+ * beside `bin/`. Each call reads whatever state it needs from a
+ * small JSON file it owns, applies one command, and writes the
+ * result back out, with no daemon, no port and no long-lived
+ * process.
  * This is the shape both a Bash-invoked Claude Code skill and a
  * future hook dispatcher need: one process, one JSON in, one JSON
  * out.

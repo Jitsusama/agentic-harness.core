@@ -124,6 +124,7 @@
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json",
 		"prepare": "tsc -p tsconfig.build.json",
+		"check": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:browser",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
 		"typecheck": "tsc --noEmit",
