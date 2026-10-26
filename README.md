@@ -1,5 +1,12 @@
 # agentic-harness.core
 
+**Archived.** This code moved into
+[agentic-harness.pi](https://github.com/Jitsusama/agentic-harness.pi) on
+2026-10-25, at this repository's 0.16.3, and lives there under `lib/core/`.
+Another package imports it as `agentic-harness.pi/core/<module>`. Nothing
+here changes any more; the history and tags stay so a pinned commit can
+still be fetched.
+
 Pi-agnostic business logic for [agentic-harness](https://github.com/Jitsusama/agentic-harness.pi):
 state machines, guardian decisions, the quest domain model. Each domain is a
 pure, host-agnostic TypeScript module plus a stateless-per-invocation CLI;
