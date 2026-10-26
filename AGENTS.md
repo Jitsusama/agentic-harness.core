@@ -4,8 +4,12 @@ agentic-harness.core is the host-agnostic library under
 [agentic-harness.pi][pi]: the logic of its guardians, quests,
 reviews, trees and integrations, with no pi in it. A host (pi,
 Claude Code, a hook dispatcher) owns persistence, presentation and
-how it asks a person; this package decides. It is published to npm
-as `@jitsusama/agentic-harness.core`, and `bin/` is its CLI.
+how it asks a person; this package decides. `bin/` is its CLI.
+
+It is no longer published to npm: `package.json` is private, so
+`npm publish` refuses. The last release, 0.16.2, is what
+agentic-harness.pi takes until this code is folded into it, so a
+change made here reaches pi only through that fold.
 
 ## Map
 

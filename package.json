@@ -1,6 +1,7 @@
 {
 	"name": "@jitsusama/agentic-harness.core",
 	"version": "0.16.3",
+	"private": true,
 	"description": "Pi-agnostic business logic for agentic-harness: state machines, guardian decisions, the quest domain model.",
 	"license": "MIT",
 	"type": "module",
@@ -117,10 +118,6 @@
 	"files": [
 		"dist"
 	],
-	"publishConfig": {
-		"registry": "https://registry.npmjs.org/",
-		"access": "public"
-	},
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json",
 		"prepare": "tsc -p tsconfig.build.json",
